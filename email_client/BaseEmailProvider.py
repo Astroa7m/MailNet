@@ -3,8 +3,6 @@ from typing import Tuple, Dict, Union, List, Optional
 
 
 class EmailClient(ABC):
-    OP_RESULT = "operation_status"
-    OP_MESSAGE = "operation_message"
     """
      Abstract base class for email client integrations.
 
@@ -26,7 +24,8 @@ class EmailClient(ABC):
         * A list of dict containing metadata, which could happen in two scenarios only.
         By either calling read_emails which returns a list or calling search_emails without msg_id
     """
-
+    OP_RESULT = "operation_status"
+    OP_MESSAGE = "operation_message"
     @abstractmethod
     async def send_email(self, to: str, subject: str, body: str) -> Tuple[str, str, Dict]:
         """

@@ -10,7 +10,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from email_client.BaseEmailProvider import EmailClient
-from util import EmailingStatus
+from email_client.models import EmailingStatus
 
 
 class GmailClient(EmailClient):
@@ -21,12 +21,12 @@ class GmailClient(EmailClient):
         'https://www.googleapis.com/auth/gmail.modify',
     ]
 
-    CREDENTIAL_FILE = "../credentials.json"
-    TOKEN_FILE = "../token.json"
-
-    def __init__(self):
+    def __init__(self, credential_file, token_file):
         super().__init__()
+        self.CREDENTIAL_FILE = credential_file
+        self.TOKEN_FILE = token_file
         self.service = self._get_gmail_service_sync()
+
 
     def _get_gmail_service_sync(self):
         creds = None
@@ -326,7 +326,9 @@ class GmailClient(EmailClient):
 
 
 async def test():
-    gmail_client = GmailClient()
+    CREDENTIAL_FILE = "../credentials.json"
+    TOKEN_FILE = "../token.json"
+    gmail_client = GmailClient(CREDENTIAL_FILE, TOKEN_FILE)
 
     print("Starting tests")
     """SENDING EMAIL"""
