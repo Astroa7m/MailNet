@@ -16,8 +16,9 @@ provider = Provider.GOOGLE
 
 
 def get_client(provider: Provider) -> BaseEmailProvider:
-    credentials = "credentials.json"
-    token = "token.json"
+    path = Path(__file__).resolve().parents[1]
+    credentials = path / "credentials.json"
+    token = path / "token.json"
     return GmailClient(credentials, token) if provider == Provider.GOOGLE else OutlookClient()
 
 
