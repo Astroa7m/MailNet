@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Union, List, Optional
+from typing import Tuple, Dict, Union, List, Optional, Any
 
 from common import assign_doc
 
@@ -26,22 +26,31 @@ class EmailClient(ABC):
         * A list of dict containing metadata, which could happen in two scenarios only.
         By either calling read_emails which returns a list or calling search_emails without msg_id
     """
+    SCOPES: List[str]
     OP_RESULT = "operation_status"
     OP_MESSAGE = "operation_message"
+    SEND_EMAIL_SUCCESS_MESSAGE = "Email has been sent successfully"
+    DRAFT_EMAIL_SUCCESS_MESSAGE = "Email draft has been created successfully"
+    SEND_DRAFT_EMAIL_SUCCESS_MESSAGE = "Email draft has been sent successfully"
+    SEARCH_EMAIL_SUCCESS_MESSAGE = "Email has been searched successfully"
+    READ_EMAIL_SUCCESS_MESSAGE = "Emails have been read successfully"
+    REPLY_TO_EMAIL_SUCCESS_MESSAGE = "Replied to email successfully"
+    DELETE_EMAIL_SUCCESS_MESSAGE = "Email has been deleted successfully"
+    ARCHIVE_EMAIL_SUCCESS_MESSAGE = "Emails have been archived successfully"
 
     @assign_doc()
     @abstractmethod
-    async def send_email(self, to: str, subject: str, body: str) -> Tuple[str, str, Dict]:
+    async def send_email(self, to: str, subject: str, body: str) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def draft_email(self, to: str, subject: str, body: str) -> Tuple[str, str, Dict]:
+    async def draft_email(self, to: str, subject: str, body: str) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def send_draft(self, draft_id: str) -> Tuple[str, str, Dict]:
+    async def send_draft(self, draft_id: str) -> Dict[str, Any]:
         pass
 
     @assign_doc()
@@ -57,31 +66,30 @@ class EmailClient(ABC):
             label: Optional[str] = None,
             msg_id: Optional[str] = None,
             max_results: int = 10
-    ) -> Tuple[str, str, List[Dict]]:
+    ) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def read_emails(self, max_results: int = 5, days_back: int = 5) -> Tuple[str, str, List[Dict]]:
+    async def read_emails(self, max_results: int = 5, days_back: int = 5) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def reply_to_email(self, msg_id: str, body: str) -> Tuple[str, str, Dict]:
+    async def reply_to_email(self, msg_id: str, body: str) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def delete_email(self, msg_id: str) -> Tuple[str, str, Dict]:
+    async def delete_email(self, msg_id: str) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def archive_email(self, msg_id: str) -> Tuple[str, str, Dict]:
+    async def archive_email(self, msg_id: str) -> Dict[str, Any]:
         pass
 
     @assign_doc()
     @abstractmethod
-    async def toggle_label_email(self, msg_id: str, label_name: str, action: str = "add") -> Tuple[str, str, Dict]:
+    async def toggle_label_email(self, msg_id: str, label_name: str, action: str = "add") -> Dict[str, Any]:
         pass
-

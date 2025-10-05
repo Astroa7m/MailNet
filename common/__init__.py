@@ -10,7 +10,7 @@ DOCSTRINGS = {
             body (str): Content of the email body (plain text or HTML).
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed' (EmailingStatus enum).
                 - operation_message: Description of the operation result.
                 - result: Dict containing metadata (e.g., message ID, thread ID).""",
@@ -25,7 +25,7 @@ DOCSTRINGS = {
             body (str): Content of the draft message.
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the draft creation result.
                 - result: Dict containing metadata (e.g., draft ID).""",
@@ -36,7 +36,7 @@ DOCSTRINGS = {
             draft_id (str): Unique identifier of the draft message.
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the send operation.
                 - result: Dict containing metadata about the sent message.""",
@@ -57,7 +57,7 @@ DOCSTRINGS = {
             max_results (int): Maximum number of results to return.
 
         Returns:
-            Tuple[str, str, List[Dict]]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the search outcome.
                 - result: List of message metadata dicts (or single dict if `msg_id` is used).""",
@@ -71,7 +71,7 @@ DOCSTRINGS = {
             days_back (int): Number of days to look back from today.
 
         Returns:
-            Tuple[str, str, List[Dict]]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the read operation.
                 - result: List of message metadata dicts, sorted by recency.""",
@@ -84,7 +84,7 @@ DOCSTRINGS = {
             body (str): Content of the reply message.
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the reply operation.
                 - result: Dict containing metadata about the reply message.""",
@@ -95,7 +95,7 @@ DOCSTRINGS = {
             msg_id (str): ID of the message to delete.
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the deletion result.
                 - result: Dict containing deletion metadata or confirmation.""",
@@ -106,7 +106,7 @@ DOCSTRINGS = {
             msg_id (str): ID of the message to archive.
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the archive result.
                 - result: Dict containing updated message metadata.""",
@@ -121,7 +121,7 @@ DOCSTRINGS = {
             action (str): Either "add" or "remove".
 
         Returns:
-            Tuple[str, str, Dict]: A tuple containing:
+            dict[str, Any]: A dict containing:
                 - operation_status: 'succeeded' or 'failed'.
                 - operation_message: Description of the label toggle result.
                 - result: Dict containing updated message metadata.""",

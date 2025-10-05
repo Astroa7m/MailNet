@@ -27,7 +27,6 @@ class GmailClient(EmailClient):
         self.TOKEN_FILE = token_file
         self.service = self._get_gmail_service_sync()
 
-
     def _get_gmail_service_sync(self):
         creds = None
 
@@ -92,6 +91,7 @@ class GmailClient(EmailClient):
 
     @staticmethod
     def convert_to_datetime(timestamp):
+        # noinspection PyBroadException
         try:
             return datetime.fromtimestamp(int(timestamp) / 1000).isoformat()
         except:
@@ -128,7 +128,7 @@ class GmailClient(EmailClient):
             raw = self.prep_message_raw(to, subject, body)
             res = await asyncio.to_thread(
                 self.service.users().messages().send(userId='me', body={'raw': raw}).execute)
-            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: "Email has been sent successfully",
+            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: self.SEND_EMAIL_SUCCESS_MESSAGE,
                       "result": res}
             return result
         except Exception as e:
@@ -141,7 +141,7 @@ class GmailClient(EmailClient):
             draft = {"message": {"raw": raw}}
             res = await asyncio.to_thread(self.service.users().drafts().create(userId='me', body=draft).execute)
             result = {self.OP_RESULT: EmailingStatus.SUCCEEDED,
-                      self.OP_MESSAGE: "Email draft has been created successfully", "result": res}
+                      self.OP_MESSAGE: self.DRAFT_EMAIL_SUCCESS_MESSAGE, "result": res}
 
             return result
         except Exception as e:
@@ -153,7 +153,7 @@ class GmailClient(EmailClient):
             res = await asyncio.to_thread(
                 self.service.users().drafts().send(userId='me', body={'id': draft_id}).execute)
             result = {self.OP_RESULT: EmailingStatus.SUCCEEDED,
-                      self.OP_MESSAGE: "Email draft has been sent successfully", "result": res}
+                      self.OP_MESSAGE: self.SEND_DRAFT_EMAIL_SUCCESS_MESSAGE, "result": res}
             return result
         except Exception as e:
             result = {self.OP_RESULT: EmailingStatus.FAILED, self.OP_MESSAGE: str(e)}
@@ -167,7 +167,7 @@ class GmailClient(EmailClient):
                 msg_data = await asyncio.to_thread(
                     self.service.users().messages().get(userId='me', id=msg_id, format='full').execute)
                 result = {self.OP_RESULT: EmailingStatus.SUCCEEDED,
-                          self.OP_MESSAGE: "Email has been searched successfully", "result": self.parse_msg(msg_data)}
+                          self.OP_MESSAGE: self.SEARCH_EMAIL_SUCCESS_MESSAGE, "result": self.parse_msg(msg_data)}
                 return result
 
             query_parts = []
@@ -193,7 +193,7 @@ class GmailClient(EmailClient):
                 enriched.append(self.parse_msg(msg_data))
 
             result = {self.OP_RESULT: EmailingStatus.SUCCEEDED,
-                      self.OP_MESSAGE: "Emails have been searched successfully", "result": enriched}
+                      self.OP_MESSAGE: self.SEARCH_EMAIL_SUCCESS_MESSAGE, "result": enriched}
 
             return result
 
@@ -208,9 +208,10 @@ class GmailClient(EmailClient):
                 max_results=max_results,
                 after=after
             )
-            # since search returns the result in our specifide format in all functions, we need to unpack to avoid nesting
+            # since search returns the result in our specified format in all functions,
+            # we need to unpack to avoid nesting
             messages = res['result']
-            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: "Emails have been read successfully",
+            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: self.READ_EMAIL_SUCCESS_MESSAGE,
                       "result": messages}
             return result
 
@@ -240,7 +241,7 @@ class GmailClient(EmailClient):
             }
 
             res = await asyncio.to_thread(self.service.users().messages().send(userId='me', body=message).execute)
-            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: "Replied to email successfully",
+            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: self.REPLY_TO_EMAIL_SUCCESS_MESSAGE,
                       "result": res}
             return result
 
@@ -251,7 +252,7 @@ class GmailClient(EmailClient):
     async def delete_email(self, msg_id):
         try:
             await asyncio.to_thread(self.service.users().messages().delete(userId='me', id=msg_id).execute)
-            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: "Email has been deleted successfully"}
+            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: self.DELETE_EMAIL_SUCCESS_MESSAGE}
             return result
         except Exception as e:
             result = {self.OP_RESULT: EmailingStatus.FAILED, self.OP_MESSAGE: str(e)}
@@ -263,7 +264,7 @@ class GmailClient(EmailClient):
                 self.service.users().messages().modify(userId='me', id=msg_id,
                                                        body={'removeLabelIds': ['INBOX']}).execute)
             result = {self.OP_RESULT: EmailingStatus.SUCCEEDED,
-                      self.OP_MESSAGE: "Emails have been archived successfully", "result": res}
+                      self.OP_MESSAGE: self.ARCHIVE_EMAIL_SUCCESS_MESSAGE, "result": res}
             return result
         except Exception as e:
             result = {self.OP_RESULT: EmailingStatus.FAILED, self.OP_MESSAGE: str(e)}
@@ -308,7 +309,7 @@ class GmailClient(EmailClient):
                         body={'removeLabelIds': [label_id]}
                     ).execute)
                     result = {self.OP_RESULT: EmailingStatus.SUCCEEDED,
-                              self.OP_MESSAGE: f"🗑️ Removed label '{label_name}' from message {msg_id}", "result": res}
+                              self.OP_MESSAGE: f"Removed label '{label_name}' from message {msg_id}", "result": res}
                     return result
                 else:
                     result = {self.OP_RESULT: EmailingStatus.FAILED,
@@ -326,9 +327,9 @@ class GmailClient(EmailClient):
 
 
 async def test():
-    CREDENTIAL_FILE = "../credentials.json"
-    TOKEN_FILE = "../token.json"
-    gmail_client = GmailClient(CREDENTIAL_FILE, TOKEN_FILE)
+    credential_file = "../credentials.json"
+    token_file = "../token.json"
+    gmail_client = GmailClient(credential_file, token_file)
 
     print("Starting tests")
     """SENDING EMAIL"""
@@ -338,7 +339,7 @@ async def test():
     """DRAFTING EMAIL"""
     result = await gmail_client.draft_email("ahmed123.as27@gmail.com", "draft email from python",
                                             "Hello\nDw this is a test draft")
-    print("Done drafting email\n")
+    print(f"Done drafting email\nResult: {result}")
     result = await gmail_client.send_draft(result['result']['id'])
     print(f"Done sending draft email.\nResult: {result}")
 

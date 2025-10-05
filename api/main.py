@@ -7,7 +7,6 @@ from api.models import Provider
 from common import assign_doc
 from email_client import BaseEmailProvider
 from email_client.gmail_helpers import GmailClient
-from email_client.outlook_helpers import OutlookClient
 
 app = FastAPI(title="Email MCP Server")
 
@@ -16,7 +15,7 @@ def get_client(provider: Provider = Provider.GOOGLE) -> BaseEmailProvider:
     path = Path(__file__).resolve().parents[1]
     credentials = path / "credentials.json"
     token = path / "token.json"
-    return GmailClient(credentials, token) if provider == Provider.GOOGLE else OutlookClient()
+    return GmailClient(credentials, token) #if provider == Provider.GOOGLE else OutlookClient()
 
 
 import time
