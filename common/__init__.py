@@ -113,7 +113,7 @@ DOCSTRINGS = {
     "toggle_label_email": """
         Adds or removes a label/category from the specified message.
 
-        Used to organize or tag messages for agentic workflows.
+        Used to organize or tag messages
 
         Args:
             msg_id (str): ID of the message to modify.

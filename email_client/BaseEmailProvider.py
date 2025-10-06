@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
 from typing import Tuple, Dict, Union, List, Optional, Any
-
 from common import assign_doc
 
 
@@ -93,3 +93,8 @@ class EmailClient(ABC):
     @abstractmethod
     async def toggle_label_email(self, msg_id: str, label_name: str, action: str = "add") -> Dict[str, Any]:
         pass
+
+    @staticmethod
+    def get_after_date(days_back=5):
+        cutoff = datetime.now() - timedelta(days=days_back)
+        return cutoff.strftime('%Y/%m/%d')

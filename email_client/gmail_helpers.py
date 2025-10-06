@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import os.path
-from datetime import datetime, timedelta
+from datetime import datetime
 from email.mime.text import MIMEText
 
 from google.auth.transport.requests import Request
@@ -46,11 +46,6 @@ class GmailClient(EmailClient):
                 token.write(creds.to_json())
 
         return build('gmail', 'v1', credentials=creds)
-
-    @staticmethod
-    def get_after_date(days_back=5):
-        cutoff = datetime.now() - timedelta(days=days_back)
-        return cutoff.strftime('%Y/%m/%d')
 
     @staticmethod
     def prep_message_raw(to, subject, body, original_msg_id=None):

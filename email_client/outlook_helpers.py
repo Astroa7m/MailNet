@@ -3,7 +3,7 @@ import json
 import os
 import time
 import webbrowser
-from typing import Dict, Optional, Any
+from datetime import datetime
 
 import aiohttp
 from dotenv import load_dotenv
@@ -11,11 +11,99 @@ from msal import ConfidentialClientApplication
 
 from email_client.BaseEmailProvider import EmailClient
 from email_client.models import EmailingStatus
+from urllib.parse import quote
+from typing import Optional, Dict, Any
 
 GRAPH_API = "https://graph.microsoft.com/v1.0"
 
 
 # testing at https://developer.microsoft.com/en-us/graph/graph-explorer
+
+
+class GraphQueryPlanner:
+    GMAIL_TO_OUTLOOK = {
+        "INBOX": "Inbox",
+        "SENT": "SentItems",
+        "DRAFT": "Drafts",
+        "SPAM": "JunkEmail",
+        "TRASH": "DeletedItems",
+        "ARCHIVE": "Archive",
+        "IMPORTANT": "Inbox",
+    }
+
+    def __init__(self, label: Optional[str], filters: Dict[str, Any], max_results: int = 10):
+        self.label = label.upper() if label else None
+        self.filters = filters
+        self.max_results = max_results
+
+    def is_category_label(self) -> bool:
+        return self.label and self.label not in self.GMAIL_TO_OUTLOOK or self.label in ["STARRED", "IMPORTANT"]
+
+    def get_folder(self) -> Optional[str]:
+        return self.GMAIL_TO_OUTLOOK.get(self.label, None) if self.label else None
+
+    def to_iso8601(self, date_str: str) -> str:
+        """Converts Gmail format (YYYY/MM/DD) to ISO 8601 Outlook date format"""
+        dt = datetime.strptime(date_str, "%Y/%m/%d")
+        return dt.strftime("%Y-%m-%dT00:00:00Z")
+
+    def build_filter(self) -> Optional[str]:
+        f = []
+
+        # semantic flags
+        if self.label == "DRAFT":
+            f.append("isDraft eq true")
+        if self.label == "INBOX" and self.filters.get("unread"):
+            f.append("isRead eq false")
+        if self.label == "ARCHIVE":
+            pass  # Already scoped to Archive folder
+        if self.label == "IMPORTANT":
+            f.append("categories/any(c:c eq 'Important')")
+
+        # explicit filters
+        if self.filters.get("sender"):
+            f.append(f"from/emailAddress/address eq '{self.filters['sender']}'")
+        if self.filters.get("subject"):
+            f.append(f"contains(subject,'{self.filters['subject']}')")
+        if self.filters.get("has_attachment"):
+            f.append("hasAttachments eq true")
+        if self.filters.get("after"):
+            f.append(f"receivedDateTime ge {self.to_iso8601(self.filters['after'])}")
+        if self.filters.get("before"):
+            f.append(f"receivedDateTime le {self.to_iso8601(self.filters['before'])}")
+        if self.filters.get("unread") and self.label != "INBOX":
+            f.append("isRead eq false")
+
+        # custom category fallback
+        if self.label and self.label not in self.GMAIL_TO_OUTLOOK:
+            f.append(f"categories/any(c:c eq '{self.label}')")
+
+        return " and ".join(f) if f else None
+
+    def compose_endpoint(self) -> str:
+        if self.filters.get("msg_id"):
+            return f"/me/messages/{self.filters['msg_id']}"
+
+        filter_str = self.build_filter()
+        folder = self.get_folder()
+        if folder:
+            base = f"/me/mailFolders/{folder}/messages"
+        else:
+            base = f"/me/messages"
+
+        query = []
+
+        if filter_str:
+            query.append(f"$filter={quote(filter_str, safe='()\'/ ')}")
+        query.append(f"$top={self.max_results}")
+        # due to the shortcoming of Graph API, adding the following param would return an error
+        # though it should work perfectly fine
+        # so this will stop us from getting message in a recency order
+        # query.append(f"order={self.max_results}")
+        endpoint = f"{base}?{'&'.join(query)}"
+        return endpoint
+
+
 class OutlookClient(EmailClient):
     SCOPES = [
         "https://graph.microsoft.com/Mail.ReadWrite",
@@ -24,7 +112,7 @@ class OutlookClient(EmailClient):
         "https://graph.microsoft.com/User.Read"
     ]
 
-    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, token_file: str = "graph_token.json"):
+    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, token_file: str = "../graph_token.json"):
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
@@ -50,7 +138,7 @@ class OutlookClient(EmailClient):
                 if "refresh_token" in token_data:
                     return self._refresh_token(token_data["refresh_token"])
 
-        # Launch browser for user consent
+        # launch browser for user consent
         auth_flow = self.app.initiate_auth_code_flow(
             scopes=self.SCOPES,
             redirect_uri=self.redirect_uri
@@ -159,10 +247,77 @@ class OutlookClient(EmailClient):
             msg_id: Optional[str] = None,
             max_results: int = 10
     ) -> Dict[str, Any]:
-        raise NotImplementedError("Awaiting implementation")
+        planner = GraphQueryPlanner(
+            label=label,
+            filters={
+                "sender": sender,
+                "subject": subject,
+                "has_attachment": has_attachment,
+                "after": after,
+                "before": before,
+                "unread": unread,
+                "msg_id": msg_id
+            },
+            max_results=max_results
+        )
+        endpoint = planner.compose_endpoint()
+
+        try:
+
+            search_res = await self._request("GET", endpoint)
+
+            # if we are searching by id then we are going to get the message attr right away
+            # but if we are searching with filters, then we gonna get a list of value (messages)
+            messages = search_res if msg_id else search_res['value']
+
+            def extract_important_fields(message: Dict[str, Any]) -> Dict[str, Any]:
+                sender = message.get("from", {}).get("emailAddress", {})
+                attachments = message.get("hasAttachments", False)
+                categories = message.get("categories", [])
+                body_object = message.get("body", {})
+                body = message.get("bodyPreview") if body_object['contentType'] == "html" else body_object['content']
+                return {
+                    "id": message.get("id"),
+                    "conversation_id": message.get("conversationId"),
+                    "subject": message.get("subject"),
+                    "sender": f"{sender.get("name")} <{sender.get("address")}>",
+                    "body": body,
+                    "hasAttachments": attachments,
+                    "categories": categories,
+                    "receivedDateTime": message.get("receivedDateTime")
+                }
+
+            if msg_id:
+                result = extract_important_fields(messages)
+            else:
+                result = [extract_important_fields(message) for message in messages]
+
+            result = {
+                self.OP_RESULT: EmailingStatus.SUCCEEDED,
+                self.OP_MESSAGE: self.SEARCH_EMAIL_SUCCESS_MESSAGE,
+                "result": result
+            }
+            return result
+        except Exception as e:
+            result = {self.OP_RESULT: EmailingStatus.FAILED, self.OP_MESSAGE: str(e)}
+            print(result)
+            return result
 
     async def read_emails(self, max_results: int = 5, days_back: int = 5) -> Dict[str, Any]:
-        raise NotImplementedError("Awaiting implementation")
+        try:
+            after = self.get_after_date(days_back)
+            res = await self.search_emails(
+                max_results=max_results,
+                after=after
+            )
+
+            messages = res['result']
+            result = {self.OP_RESULT: EmailingStatus.SUCCEEDED, self.OP_MESSAGE: self.READ_EMAIL_SUCCESS_MESSAGE,
+                      "result": messages}
+            return result
+        except Exception as e:
+            result = {self.OP_RESULT: EmailingStatus.FAILED, self.OP_MESSAGE: str(e)}
+            return result
 
     async def reply_to_email(self, msg_id: str, body: str) -> Dict[str, Any]:
         try:
@@ -198,8 +353,51 @@ class OutlookClient(EmailClient):
             result = {self.OP_RESULT: EmailingStatus.FAILED, self.OP_MESSAGE: str(e)}
             return result
 
-    async def toggle_label_email(self, msg_id: str, label_name: str, action: str = "add") -> Dict[str, Any]:
-        raise NotImplementedError("Awaiting implementation")
+    async def toggle_label_email(
+            self,
+            msg_id: str,
+            label_name: str,
+            action: str = "add"
+    ) -> Dict[str, Any]:
+        endpoint = f"/me/messages/{msg_id}"
+        try:
+            current = await self._request("GET", endpoint)
+            existing = current.get("categories", [])
+        except Exception as e:
+            return {
+                self.OP_RESULT: EmailingStatus.FAILED,
+                self.OP_MESSAGE: f"Failed to fetch message: {e}"
+            }
+
+        # normalize label
+        label = label_name.strip().capitalize()
+
+        # modify category list
+        if action == "add":
+            if label not in existing:
+                existing.append(label)
+        elif action == "remove":
+            existing = [c for c in existing if c != label]
+        else:
+            return {
+                self.OP_RESULT: EmailingStatus.FAILED,
+                self.OP_MESSAGE: f"Invalid action: {action}"
+            }
+
+        # patch updated categories
+        try:
+            payload = {"categories": existing}
+            await self._request("PATCH", endpoint, json=payload)
+            return {
+                self.OP_RESULT: EmailingStatus.SUCCEEDED,
+                self.OP_MESSAGE: f"Label '{label}' {action}ed successfully",
+                "result": {"id": msg_id, "categories": existing}
+            }
+        except Exception as e:
+            return {
+                self.OP_RESULT: EmailingStatus.FAILED,
+                self.OP_MESSAGE: f"Failed to update label: {e}"
+            }
 
 
 async def test():
@@ -220,15 +418,28 @@ async def test():
     result = await graph_client.draft_email("ahmed123.as27@hotmail.com", "draft email from python",
                                             "Hello\nDw this is a test draft")
     print(f"Done drafting email\n\nResult: {result}")
-    result = await graph_client.send_draft(result['result']['id'])
+    result = await graph_client.send_draft(result['result']['draftId'])
     print(f"Done sending draft email.\nResult: {result}")
 
     """SEARCHING EMAIL"""
     result = await graph_client.search_emails(sender="ahmed123.as27@hotmail.com")
     print(f"Done searching emails, result:\n{result}\n")
+    """SEARCHING EMAIL"""
+    result = await graph_client.search_emails(sender="200304om@aou.edu.om", )
+    print(f"Done searching emails, result:\n{result}\n")
 
-    result = await graph_client.search_emails(msg_id="199b039b68508ad4")
+    result = await graph_client.search_emails(msg_id=result['result'][0]['id'])
     print(f"Done searching emails by id, result:\n{result}\n")
+
+    print("extra searching")
+    result = await graph_client.search_emails(label="Starred")
+    print(f"Done searching emails by category/label, result:\n{result}\n")
+
+    result = await graph_client.search_emails(after="2025/10/5", before="2025/10/6")
+    print(f"Done searching emails between dates, result:\n{result}\n")
+
+    result = await graph_client.search_emails(label="ARCHIVE")
+    print(f"Done searching emails by archive, result:\n{result}\n")
 
     """READ EMAIL"""
     result = await graph_client.read_emails()
