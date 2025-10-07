@@ -1,27 +1,42 @@
+import json
+import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
+import aiofiles
+from dotenv import load_dotenv
 from fastapi import FastAPI, Depends
+from pydantic import ValidationError
 
-from api.models import Provider
 from common import assign_doc
+from common.models import EmailSettings, Provider
 from email_client import BaseEmailProvider
 from email_client.gmail_helpers import GmailClient
+from email_client.outlook_helpers import OutlookClient
 
 app = FastAPI(title="Email MCP Server")
 
-# by default provider = Google, will change later
-def get_client(provider: Provider = Provider.GOOGLE) -> BaseEmailProvider:
-    path = Path(__file__).resolve().parents[1]
+path = Path(__file__).resolve().parents[1]
+
+SETTINGS_PATH = path / "email_settings.json"
+
+
+async def get_client(provider: Provider) -> BaseEmailProvider:
+    # outlook cred
+    load_dotenv()
+    client_id = os.getenv("AZURE_APPLICATION_CLIENT_ID")
+    client_secret = os.getenv("AZURE_SECRET_VALUE")
+    token_file = path / "graph_token.json"
+
+    # gmail cred
     credentials = path / "credentials.json"
     token = path / "token.json"
-    return GmailClient(credentials, token) #if provider == Provider.GOOGLE else OutlookClient()
-
-
-import time
-
-start = time.time()
-print("Client initialized in", time.time() - start, "seconds")
+    if provider == Provider.GOOGLE:
+        client = GmailClient(credentials, token)
+    else:
+        client = OutlookClient(client_id=client_id, client_secret=client_secret,
+                               redirect_uri="http://localhost:3000/callback", token_file=token_file)
+    return client
 
 
 @assign_doc()
@@ -89,3 +104,61 @@ async def archive_email(msg_id: str, client=Depends(get_client)):
 @app.post("/toggle_label")
 async def toggle_label(msg_id: str, label_name: str, action: str = "add", client=Depends(get_client)):
     return await client.toggle_label_email(msg_id, label_name, action)
+
+
+@app.get("/ load_email_settings")
+async def load_email_settings() -> EmailSettings:
+    """
+    Loads the current email generation settings
+
+    Returns:
+        EmailSettings: A validated configuration object containing tone,
+                       style, personalization, and behavioral flags.
+    """
+
+    try:
+        async with aiofiles.open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            content = await f.read()
+            data = json.loads(content)
+            return EmailSettings(**data)
+    except (FileNotFoundError, json.JSONDecodeError, ValidationError):
+        return EmailSettings()
+
+
+@app.post("/update_email_settings")
+async def update_email_settings(partial_settings: dict) -> EmailSettings | Tuple[str, str]:
+    """
+    Updates the persisted email settings with partial overrides.
+
+    This function merges incoming user preferences with the existing
+    configuration, validates the result, and writes it back to disk.
+    Only provided fields are overridden; all others are preserved.
+
+    Args:
+        partial_settings (dict): A dictionary of fields to override in the
+                                 current email settings (e.g., tone, language).
+
+    Returns:
+        EmailSettings: The updated and validated configuration object. Or a Tuple dict
+    """
+    try:
+        current = await load_email_settings()
+        merged = current.model_dump()
+
+        for key, value in partial_settings.items():
+            if key in EmailSettings.model_fields:
+                merged[key] = value
+            else:
+                raise ValueError(
+                    f"Invalid setting '{key}'. Valid keys: {list(EmailSettings.model_fields.keys())}"
+                )
+
+        updated = EmailSettings(**merged)
+
+        async with aiofiles.open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(updated.model_dump(), indent=2, ensure_ascii=False))
+
+        return updated
+
+    except Exception as e:
+        return "error", str(e)

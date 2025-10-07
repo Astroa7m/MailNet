@@ -112,7 +112,7 @@ class OutlookClient(EmailClient):
         "https://graph.microsoft.com/User.Read"
     ]
 
-    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, token_file: str = "../graph_token.json"):
+    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, token_file: str):
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
@@ -405,7 +405,7 @@ async def test():
     client_id = os.getenv("AZURE_APPLICATION_CLIENT_ID")
     client_secret = os.getenv("AZURE_SECRET_VALUE")
     graph_client = OutlookClient(client_id=client_id, client_secret=client_secret,
-                                 redirect_uri="http://localhost:3000/callback")
+                                 redirect_uri="http://localhost:3000/callback", token_file="graph_token.json")
 
     print("Starting tests")
 
