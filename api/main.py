@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 from typing import Optional, Tuple
-
 import aiofiles
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends
@@ -22,20 +21,21 @@ SETTINGS_PATH = path / "email_settings.json"
 
 
 async def get_client(provider: Provider) -> BaseEmailProvider:
-    # outlook cred
+    # azure/outlook cred
     load_dotenv()
-    client_id = os.getenv("AZURE_APPLICATION_CLIENT_ID")
-    client_secret = os.getenv("AZURE_SECRET_VALUE")
-    token_file = path / "graph_token.json"
 
-    # gmail cred
-    credentials = path / "credentials.json"
-    token = path / "token.json"
+    azure_client_id = os.getenv("AZURE_APPLICATION_CLIENT_ID")
+    azure_client_secret = os.getenv("AZURE_SECRET_VALUE")
+    azure_token_file_path = os.getenv("AZURE_PREFERRED_TOKEN_FILE_PATH")
+
+    # google/gmail cred
+    google_credentials = os.getenv("GOOGLE_CREDENTIALS_FILE_PATH")
+    google_token_file_path = os.getenv("GOOGLE_PREFERRED_TOKEN_FILE_PATH")
     if provider == Provider.GOOGLE:
-        client = GmailClient(credentials, token)
+        client = GmailClient(google_credentials, google_token_file_path)
     else:
-        client = OutlookClient(client_id=client_id, client_secret=client_secret,
-                               redirect_uri="http://localhost:3000/callback", token_file=token_file)
+        client = OutlookClient(client_id=azure_client_id, client_secret=azure_client_secret,
+                               redirect_uri="http://localhost:3000/callback", token_file=azure_token_file_path)
     return client
 
 
