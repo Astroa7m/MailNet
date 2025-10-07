@@ -1,2 +1,0 @@
-1- Enabling Gmail API & Microsoft API
-2- uvicorn api.main:app --reload
