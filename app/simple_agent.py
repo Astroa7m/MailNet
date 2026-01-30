@@ -1,16 +1,15 @@
 import asyncio
 from pathlib import Path
 
+from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 path = Path().resolve().parents[0]
-
-
 
 client = MultiServerMCPClient(
     {
@@ -36,25 +35,33 @@ client = MultiServerMCPClient(
     }
 )
 
-llm = ChatGroq(api_key = os.getenv("GROQ_API_KEY"), model = "openai/gpt-oss-120b")
+llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
+
 
 async def run_agent():
     tools = await client.get_tools()
-    agent = create_react_agent(
+    agent = create_agent(
         llm,
         tools
     )
 
-    query = input("prompt: ")
-    while query.lower() != "exit":
-        resposne = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": query}]}
-        )
+    messages = []
 
-        print("reasoning:", resposne['messages'][-1].additional_kwargs['reasoning_content'])
-        print("response:", resposne['messages'][-1].content)
-        query = input("prompt: ")
+    while True:
+        inn = input("Prompt: ")
 
+        if inn == "exit":
+            break
+
+        human_message = HumanMessage(content=inn)
+        messages.append(human_message)
+
+        result = await agent.ainvoke({"messages": messages})
+
+        ai_message = result["messages"][-1]
+        messages.append(ai_message)
+
+        print(f"Agent: {ai_message.content}")
 
 
 asyncio.run(run_agent())
