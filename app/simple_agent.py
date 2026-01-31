@@ -1,12 +1,12 @@
 import asyncio
+import os
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage
+from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain.agents import create_agent
-from dotenv import load_dotenv
-import os
 
 load_dotenv()
 path = Path().resolve().parents[0]
@@ -38,17 +38,32 @@ client = MultiServerMCPClient(
 llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
 
 
+def print_messenger(turn):
+    if isinstance(turn, AIMessage):
+        # red
+        color = "\033[31mAI:\033[0m"
+    elif isinstance(turn, HumanMessage):
+        # green
+        color = "\033[32mHuman:\033[0m"
+    else:
+        # blue
+        color = "\033[34mTool:\033[0m"
+
+    print(color)
+
+
 async def run_agent():
     tools = await client.get_tools()
     agent = create_agent(
         llm,
-        tools
+        tools,
+        system_prompt="You are a helpful assistant, do not call a tool unless told."
     )
 
     messages = []
 
     while True:
-        inn = input("Prompt: ")
+        inn = input("\033[32mHuman:\033[0m ")
 
         if inn == "exit":
             break
@@ -58,10 +73,17 @@ async def run_agent():
 
         result = await agent.ainvoke({"messages": messages})
 
-        ai_message = result["messages"][-1]
-        messages.append(ai_message)
-
-        print(f"Agent: {ai_message.content}")
-
+        new_messages = result["messages"][len(messages):]
+        # extending the list with the new messages only not the full
+        messages.extend(new_messages)
+        # iterating only through the new messages so we do not duplicate the output
+        for turn in new_messages:
+            print_messenger(turn)
+            if "reasoning_content" in turn.additional_kwargs:
+                print(f"Thinking: {turn.additional_kwargs['reasoning_content']}")
+            if "tool_calls" in turn.additional_kwargs:
+                tool_call = turn.additional_kwargs['tool_calls'][0]
+                print(f"Calling function: {tool_call}")
+            print(f"Content: {turn.content}")
 
 asyncio.run(run_agent())
