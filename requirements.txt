@@ -2,3 +2,6 @@ langgraph
 langchain
 langgraph-cli[inmem]
 dotenv
+fastapi
+apscheduler
+uvicorn
