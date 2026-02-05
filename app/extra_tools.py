@@ -1,51 +1,105 @@
-from datetime import datetime
+import calendar
+import os
+from datetime import datetime, timedelta
+from typing import Optional
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+schedule_url = os.getenv("SCHEDULE_URL")
 
 
-# todo: Make sure the timezone is sit well for diff locations
-def get_current_datatime():
+def get_iso_based_on_args(
+        seconds: Optional[int] = None,
+        minutes: Optional[int] = None,
+        hours: Optional[int] = None,
+        day_of_month: Optional[int] = None,
+        month: Optional[int] = None,
+        year: Optional[int] = None,
+        days_count_from_today: Optional[int] = None,
+        day_string: Optional[str] = None,
+) -> datetime:
+    now = datetime.now()
+
+    # case 1, provided days from today e.g. schedule it after 4 days
+    if days_count_from_today:
+        dt = now + timedelta(days=days_count_from_today)
+        return dt
+
+    # case 2, provided a day string e.g. schedule it Monday (then we get next monday)
+    if day_string:
+        day_string = day_string.capitalize()
+        if day_string not in calendar.day_name:
+            raise ValueError(f"Invalid day string: {day_string}")
+        target_weekday = list(calendar.day_name).index(day_string)
+        days_ahead = (target_weekday - now.weekday() + 7) % 7
+        if days_ahead == 0:  # if today, schedule next week
+            days_ahead = 7
+        return (now + timedelta(days=days_ahead)).replace(
+            hour=hours or now.hour, minute=minutes or now.minute, second=seconds or now.second, microsecond=0
+        )
+
+    # case 3, exact date
+    if year and month and day_of_month:
+        return datetime(
+            year, month, day_of_month,
+            hours or 0, minutes or 0, seconds or 0
+        )
+
+    # last case, only time, then next time
+    if hours is not None or minutes is not None or seconds is not None:
+        target = now + timedelta(hours=hours or 0, minutes=minutes or 0, seconds=seconds or 0)
+        if target <= now:  # if time already passed today
+            target += timedelta(days=1)
+        return target
+
+
+def schedule_send_email(
+        to: str,
+        subject: str,
+        body: str,
+        seconds: Optional[int] = None,
+        minutes: Optional[int] = None,
+        hours: Optional[int] = None,
+        day_of_month: Optional[int] = None,
+        month: Optional[int] = None,
+        year: Optional[int] = None,
+        days_count_from_today: Optional[int] = None,
+        day_string: Optional[str] = None,
+):
     """
-    You must call this tool before any scheduling to get the correct date and time in iso format
-    :return: datetime in iso
+    schedules email to send, if succeeded, you should return the scheduled datetime to the user
+    :param to: recipient of the email
+    :param subject: subject of the email
+    :param body: body of the email
+    :param seconds: seconds of the time to schedule
+    :param minutes: minutes of the time to schedule
+    :param hours: hours of the time to schedule
+    :param day_of_month: day of the month of the time to schedule
+    :param month: month of the time to schedule
+    :param year: year of the time to schedule
+    :param days_count_from_today: how many days from today to schedule
+    :param day_string: day in form of a string to schedule
+    :return: success or failure message
     """
-    return datetime.now().isoformat()
+    response = None
+    dt = get_iso_based_on_args(seconds, minutes, hours, day_of_month, month, year, days_count_from_today, day_string)
 
-
-def schedule_one_shot_event(second: int, minute: int, hour: int, day: int, month: int, year: int, func_name, kwargs):
-    """
-    This function is used to schedule events for one time only
-    You can use it when the user asks for scheduling an action
-    :param hour: hour of the time for the schedule
-    :param second: seconds of the time for the schedule
-    :param minute: minute of the time for the schedule
-    :param day: day of the time for the schedule
-    :param month: month of the time for the schedule
-    :param year: year of the time for the schedule
-    :param func: the function to schedule this event from your tools
-    :param kwargs: the function arguments
-    :return: Status message
-    """
-
-    dt = datetime(year=year, month=month, day=day, hour=hour, minute=minute, second=second).isoformat()
-
-    url = f"http://127.0.0.1:8000/schedule_one_shot"
+    endpoint = f"{schedule_url}/schedule_one_shot"
 
     json_payload = {
-        "func_name": func_name,
-        "datetime_iso_string": dt,
-        "kwargs": kwargs
+        "to": to,
+        "subject": subject,
+        "body": body,
+        "dt": dt.isoformat()
     }
 
-    response = requests.post(url, json=json_payload)
-    if response.status_code == 200:
-        return f"Server says: OK"
-    else:
-        return "Failed to reach server."
-
-if __name__ == "__main__":
-    result = schedule_one_shot_event(
-        30, 43, 0, 4, 2, 2026, "hello", {"name": "Ahmed"}
-    )
-
-    print(result)
+    try:
+        response = requests.post(endpoint, json=json_payload)
+        response.raise_for_status()
+        return f"Schedule successfully, message will be sent on {dt.isoformat()}"
+    except Exception as e:
+        extras = "\nCode: {response.status_code}, Error: {response.text}" if response else ""
+        return f"Scheduled failed, error while connecting to the server: {e}." + extras

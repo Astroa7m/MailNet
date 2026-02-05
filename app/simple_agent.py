@@ -1,17 +1,27 @@
-import asyncio
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_groq import ChatGroq
+
+from app.extra_tools import schedule_send_email
+
+load_dotenv()
+
+llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
+
+import asyncio
+from pathlib import Path
+import os
+from dotenv import load_dotenv
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 load_dotenv()
+
 path = Path().resolve().parents[0]
 
-client = MultiServerMCPClient(
+mcp_client = MultiServerMCPClient(
     {
         "email_mcp": {
             "command": "uv",
@@ -35,8 +45,6 @@ client = MultiServerMCPClient(
     }
 )
 
-llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
-
 
 def print_messenger(turn):
     if isinstance(turn, AIMessage):
@@ -53,7 +61,8 @@ def print_messenger(turn):
 
 
 async def run_agent():
-    tools = await client.get_tools()
+    mcp_tools = await mcp_client.get_tools()
+    tools = mcp_tools + [schedule_send_email]
     agent = create_agent(
         llm,
         tools,
@@ -85,5 +94,6 @@ async def run_agent():
                 tool_call = turn.additional_kwargs['tool_calls'][0]
                 print(f"Calling function: {tool_call}")
             print(f"Content: {turn.content}")
+
 
 asyncio.run(run_agent())
