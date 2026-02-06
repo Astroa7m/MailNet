@@ -13,7 +13,6 @@ llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
 
 import asyncio
 from pathlib import Path
-import os
 from dotenv import load_dotenv
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -24,23 +23,9 @@ path = Path().resolve().parents[0]
 mcp_client = MultiServerMCPClient(
     {
         "email_mcp": {
-            "command": "uv",
-            "args": [
-                "--directory",
-                str(path / "mcp-server"),
-                "run",
-                "-m",
-                "mcp_launcher.server"
-            ],
-            "env": {
-                "AZURE_APPLICATION_CLIENT_ID": os.getenv("AZURE_APPLICATION_CLIENT_ID"),
-                "AZURE_CLIENT_SECRET_VALUE": os.getenv("AZURE_SECRET_VALUE"),
-                "AZURE_PREFERRED_TOKEN_FILE_PATH": str(path / "azure_token.json"),
 
-                "GOOGLE_CREDENTIALS_FILE_PATH": str(path / "google_credentials.json"),
-                "GOOGLE_PREFERRED_TOKEN_FILE_PATH": str(path / "google_token.json")
-            },
-            "transport": "stdio",
+            "transport": "streamable_http",
+            "url": "http://localhost:911/mcp"
         }
     }
 )

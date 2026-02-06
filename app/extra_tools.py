@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-schedule_url = os.getenv("SCHEDULE_URL")
+schedule_protocol = os.getenv("SCHEDULE_PROTOCOL")
+schedule_host = os.getenv("SCHEDULE_HOST")
+schedule_port = os.getenv("SCHEDULE_PORT")
 
 
 def get_iso_based_on_args(
@@ -68,9 +70,11 @@ def schedule_send_email(
         year: Optional[int] = None,
         days_count_from_today: Optional[int] = None,
         day_string: Optional[str] = None,
+        user_id: str = "tester-user-001"
 ):
     """
-    schedules email to send, if succeeded, you should return the scheduled datetime to the user
+    schedules email to send, if succeeded, you should return the scheduled datetime to the user in human-readable way
+    :param user_id: current user id interacting with the application
     :param to: recipient of the email
     :param subject: subject of the email
     :param body: body of the email
@@ -87,13 +91,14 @@ def schedule_send_email(
     response = None
     dt = get_iso_based_on_args(seconds, minutes, hours, day_of_month, month, year, days_count_from_today, day_string)
 
-    endpoint = f"{schedule_url}/schedule_one_shot"
+    endpoint = f"{schedule_protocol}://{schedule_host}:{schedule_port}/schedule_one_shot"
 
     json_payload = {
         "to": to,
         "subject": subject,
         "body": body,
-        "dt": dt.isoformat()
+        "dt": dt.isoformat(),
+        "user_id": user_id
     }
 
     try:
