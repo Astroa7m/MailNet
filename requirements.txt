@@ -6,3 +6,4 @@ fastapi
 apscheduler
 uvicorn
 pymongo
+cryptography
