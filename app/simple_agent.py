@@ -1,31 +1,42 @@
+import asyncio
+import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_groq import ChatGroq
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from app.common import encrypt_payload
 from app.extra_tools import schedule_send_email
 
 load_dotenv()
 
 llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
 
-import asyncio
-from pathlib import Path
-from dotenv import load_dotenv
-from langchain_mcp_adapters.client import MultiServerMCPClient
-
 load_dotenv()
 
 path = Path().resolve().parents[0]
+
+with open(os.getenv(r"AZURE_PREFERRED_TOKEN_FILE_PATH")) as f:
+    azure_token = json.loads(f.read())
+
+with open(os.getenv(r"GOOGLE_PREFERRED_TOKEN_FILE_PATH")) as f:
+    google_token = json.loads(f.read())
 
 mcp_client = MultiServerMCPClient(
     {
         "email_mcp": {
 
             "transport": "streamable_http",
-            "url": "http://localhost:911/mcp"
+            "url": "http://localhost:9111/mcp",
+            "headers": {
+                "azure_token": encrypt_payload(azure_token),
+                "google_token": encrypt_payload(google_token),
+                "redirect_uri": "http://localhost/"
+            }
         }
     }
 )

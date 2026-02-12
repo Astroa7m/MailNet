@@ -7,3 +7,4 @@ apscheduler
 uvicorn
 pymongo
 cryptography
+msal
