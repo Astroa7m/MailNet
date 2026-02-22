@@ -8,3 +8,6 @@ uvicorn
 pymongo
 cryptography
 msal
+starlette
+itsdangerous
+chainlit
