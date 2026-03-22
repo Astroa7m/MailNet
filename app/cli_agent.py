@@ -32,7 +32,7 @@ mcp_client = MultiServerMCPClient(
             "transport": "streamable_http",
             "url": "http://localhost:9111/mcp",
             "headers": {
-                "azure_token": encrypt_payload(azure_token),
+                "microsoft_token": encrypt_payload(azure_token),
                 "google_token": encrypt_payload(google_token),
                 "redirect_uri": "http://localhost/"
             }

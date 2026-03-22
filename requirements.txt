@@ -11,3 +11,6 @@ msal
 starlette
 itsdangerous
 chainlit
+redis
+starlette_session
+authlib
