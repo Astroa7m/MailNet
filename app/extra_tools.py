@@ -57,6 +57,8 @@ def get_iso_based_on_args(
             target += timedelta(days=1)
         return target
 
+    raise ValueError("At least one scheduling parameter required")
+
 
 def schedule_send_email(
         to: str,
@@ -106,5 +108,5 @@ def schedule_send_email(
         response.raise_for_status()
         return f"Schedule successfully, message will be sent on {dt.isoformat()}"
     except Exception as e:
-        extras = "\nCode: {response.status_code}, Error: {response.text}" if response else ""
+        extras = f"\nCode: {response.status_code}, Error: {response.text}" if response else ""
         return f"Scheduled failed, error while connecting to the server: {e}." + extras

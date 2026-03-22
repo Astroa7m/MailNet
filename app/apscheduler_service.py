@@ -79,14 +79,15 @@ async def schedule_one_shot_event(
     dt = data.pop('dt')
 
     date = datetime.fromisoformat(dt).isoformat()
-    scheduler.add_job(
+    job = scheduler.add_job(
         func=send_email_route,
         trigger="date",
         run_date=date,
         kwargs=data,
         name="Sending email scheduled",
-        id=f"job_for_({data['user_id']})_run_at_{dt}"
+        id=f"job()_for_({data['user_id']})_run_at_{dt}"
     )
+    return {"status": "scheduled", "job_id": job.id, "run_date": date}
 
 
 @api.post("/schedule_recurring")

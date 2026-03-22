@@ -11,7 +11,8 @@ import redis
 from itsdangerous import TimestampSigner
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from pymongo import MongoClient
 from langgraph.graph.state import CompiledStateGraph
 
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed
@@ -33,6 +34,7 @@ load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET")
 
 redis_client = redis.asyncio.from_url(os.getenv("REDIS_URL"))
+checkpointer = MongoDBSaver(MongoClient(os.getenv("MONGO_DB_URL")), db_name="MailNet")
 
 
 @cl.header_auth_callback
@@ -130,10 +132,6 @@ async def on_chat_start():
     """
     ).send()
 
-    #  todo: change to postgres saver in prod
-    # in ram checkpointer
-    checkpointer = MemorySaver()
-
     azure_token = user.metadata.get("azure_token")
     google_token = user.metadata.get("google_token")
 
@@ -143,11 +141,10 @@ async def on_chat_start():
     cl.user_session.set("redis_user_id", user.metadata.get("redis_user_id"))
 
     agent = await _build_agent(azure_token, google_token, checkpointer)
-    config = {"configurable": {"thread_id": cl.user_session.get("current_thread")}}
+    config = {"configurable": {"thread_id": cl.user_session.get("id")}}
 
     cl.user_session.set("agent", agent)
     cl.user_session.set("config", config)
-    cl.user_session.set("checkpointer", checkpointer)
 
 
 @cl.on_message
@@ -200,7 +197,6 @@ async def on_message(message: cl.Message):
                 print(f"[CHAT] Failed to update Redis session after token refresh: {e}")
 
         # rebuild agent with fresh token headers
-        checkpointer = cl.user_session.get("checkpointer")
         agent = await _build_agent(azure_token, google_token, checkpointer)
         cl.user_session.set("agent", agent)
 

@@ -1,6 +1,7 @@
 langgraph
 langchain
 langgraph-cli[inmem]
+langgraph-checkpoint-mongodb
 dotenv
 fastapi
 apscheduler
