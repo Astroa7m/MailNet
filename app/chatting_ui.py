@@ -63,9 +63,16 @@ async def header_auth(headers: dict) -> Optional[cl.User]:
         # starlette-session uses _cssid key to store session ids
         user_id = decoded_json_session.get("_cssid")
 
-        raw = await redis_client.get(user_id)
-        # redis uses pickle to store objects
-        session_data = pickle.loads(raw)
+        try:
+            raw = await redis_client.get(user_id)
+            if raw is None:
+                print(f"[AUTH] No session found for user_id: {user_id}")
+                return None
+            # redis uses pickle to store objects
+            session_data = pickle.loads(raw)
+        except (pickle.UnpicklingError, EOFError, TypeError) as e:
+            print(f"[AUTH] Failed to deserialize session: {e}")
+            return None
 
         user = session_data.get("user")
         raw_google = session_data.get("google_token")
@@ -149,18 +156,6 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    if message.content.strip() == "!expire":
-        azure = cl.user_session.get("azure_token")
-        google = cl.user_session.get("google_token")
-        if azure:
-            azure["expires_at"] = time.time() - 10
-            cl.user_session.set("azure_token", azure)
-        if google:
-            google["expiry"] = "2000-01-01T00:00:00Z"
-            cl.user_session.set("google_token", google)
-        await cl.Message(content="Tokens marked as expired in session. Send another message to trigger refresh.").send()
-        return
-
     azure_token = cl.user_session.get("azure_token")
     google_token = cl.user_session.get("google_token")
     refreshed = False
@@ -213,7 +208,7 @@ async def on_message(message: cl.Message):
     )
 
     thinking_step = None
-
+    tool_step = None
     async for event in stream:
         kind = event["event"]
 
@@ -246,8 +241,9 @@ async def on_message(message: cl.Message):
 
         # updating the tool result
         if kind == "on_tool_end" or kind == "on_tool_error":
-            tool_step.output = event["data"].get("output") or event['data'].get("error")
-            await tool_step.update()
+            if tool_step:
+                tool_step.output = event["data"].get("output") or event['data'].get("error")
+                await tool_step.update()
 
         # updating the message with the final message
         if kind == "on_chat_model_end":

@@ -10,13 +10,21 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette_session import SessionMiddleware, BackendType
 
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed
 
 load_dotenv()
+
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 CHAINLIT_URL = os.getenv("CHAINLIT_URL")
 JWT_SECRET = os.getenv("JWT_SECRET")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -81,7 +89,7 @@ app.add_middleware(
     backend_type=BackendType.redis,
     backend_client=redis_client,
     same_site="lax",
-    max_age=None
+    max_age=86400  # 1 day
 )
 
 # for HTML template serving
@@ -141,14 +149,15 @@ async def login_page(request: Request):
 
 
 # Google
-
 @app.get("/login/google")
+@limiter.limit("20/minute")
 async def login_google(request: Request):
     redirect_uri = request.url_for("auth_google")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
 @app.get("/auth/google", name="auth_google")
+@limiter.limit("20/minute")
 async def auth_google(request: Request):
     token = await oauth.google.authorize_access_token(request)
     user_info = token.get("userinfo")
@@ -190,22 +199,18 @@ async def auth_google(request: Request):
 
 
 # Microsoft
-
 @app.get("/login/microsoft")
+@limiter.limit("20/minute")
 async def login_microsoft(request: Request):
     redirect_uri = request.url_for("auth_microsoft")
     return await oauth.microsoft.authorize_redirect(request, redirect_uri)
 
 
 @app.get("/auth/microsoft", name="auth_microsoft")
+@limiter.limit("20/minute")
 async def auth_microsoft(request: Request):
     try:
-        token = await oauth.microsoft.authorize_access_token(
-            request,
-            claims_options={
-                "iss": {"essential": False}
-            }
-        )
+        token = await oauth.microsoft.authorize_access_token(request)
         user_info = token.get("userinfo")
 
         request.session["user"] = {
