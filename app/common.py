@@ -1,11 +1,26 @@
 import datetime
 import json
 import os
+import sys
 import time
-
+from pathlib import Path
+from typing import Optional
+# adding project root to path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain.agents.middleware import wrap_tool_call
+from langchain_core.messages import ToolMessage
+from langchain_groq import ChatGroq
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from pymongo import MongoClient
+
+from app.extra_tools import schedule_send_email
 
 load_dotenv()
 
@@ -87,3 +102,59 @@ async def refresh_google_token_if_needed(token: dict) -> dict:
                 new_token["expires_at"], datetime.timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+
+
+async def build_agent(azure_token, google_token, user_tz="UTC"):
+    checkpointer = MongoDBSaver(MongoClient(os.getenv("MONGO_DB_URL")), db_name="MailNet")
+    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
+    mcp_client = MultiServerMCPClient(
+        {
+            "email_mcp": {
+                "transport": "streamable_http",
+                "url": "http://localhost:9111/mcp",
+                "headers": {
+                    "azure_token": encrypt_payload(azure_token),
+                    "google_token": encrypt_payload(google_token),
+                    "redirect_uri": "http://localhost/"
+                }
+            }
+        }
+    )
+    mcp_tools = await mcp_client.get_tools()
+
+    def bound_schedule_send_email(
+            to: str, subject: str, body: str,
+            seconds: Optional[int] = None, minutes: Optional[int] = None,
+            hours: Optional[int] = None, day_of_month: Optional[int] = None,
+            month: Optional[int] = None, year: Optional[int] = None,
+            days_count_from_today: Optional[int] = None, day_string: Optional[str] = None,
+            user_id: str = "tester-user-001",
+    ):
+        """schedules email to send, if succeeded, you should return the scheduled datetime to the user in human-readable way"""
+        return schedule_send_email(
+            to=to, subject=subject, body=body, seconds=seconds, minutes=minutes,
+            hours=hours, day_of_month=day_of_month, month=month, year=year,
+            days_count_from_today=days_count_from_today, day_string=day_string,
+            user_id=user_id, timezone=user_tz,
+        )
+
+    tools = mcp_tools + [bound_schedule_send_email]
+    return create_agent(
+        llm,
+        tools,
+        system_prompt="You are a helpful assistant, do not call a tool unless told.",
+        checkpointer=checkpointer,
+        middleware=[handle_tool_errors]
+    )
+
+
+@wrap_tool_call
+async def handle_tool_errors(request, handler):
+    try:
+        return await handler(request)
+    except Exception as e:
+        return ToolMessage(
+            content=f"Tool error: Please check your input and try again. ({str(e)})",
+            tool_call_id=request.tool_call["id"],
+            is_error=True
+        )

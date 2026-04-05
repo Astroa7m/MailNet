@@ -249,7 +249,7 @@
             <span>Sign in with</span>
         </div>
 
-        <a href="/login/google" class="login-btn google-btn">
+        <a href="/login/google" class="login-btn google-btn" onclick="appendTz(event)">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                 <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -259,7 +259,7 @@
             Continue with Google
         </a>
 
-        <a href="/login/microsoft" class="login-btn microsoft-btn">
+        <a href="/login/microsoft" class="login-btn microsoft-btn" onclick="appendTz(event)">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                 <path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zm12.6 0H12.6V0H24v11.4z" fill="white"/>
             </svg>
@@ -270,5 +270,14 @@
             By continuing, you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
         </p>
     </div>
+    <script>
+        function appendTz(e) {
+            e.preventDefault();
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const url = new URL(e.currentTarget.href, window.location.origin);
+            url.searchParams.set("tz", tz);
+            window.location.href = url.toString();
+        }
+    </script>
 </body>
 </html>

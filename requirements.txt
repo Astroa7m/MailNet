@@ -16,3 +16,6 @@ redis
 starlette_session
 authlib
 slowapi
+motor
+ag-ui-langgraph
+copilotkit

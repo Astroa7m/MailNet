@@ -2,6 +2,7 @@ import calendar
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -22,8 +23,10 @@ def get_iso_based_on_args(
         year: Optional[int] = None,
         days_count_from_today: Optional[int] = None,
         day_string: Optional[str] = None,
+        timezone: str = "UTC",
 ) -> datetime:
-    now = datetime.now()
+    tz = ZoneInfo(timezone)
+    now = datetime.now(tz)
 
     # case 1, provided days from today e.g. schedule it after 4 days
     if days_count_from_today:
@@ -47,7 +50,8 @@ def get_iso_based_on_args(
     if year and month and day_of_month:
         return datetime(
             year, month, day_of_month,
-            hours or 0, minutes or 0, seconds or 0
+            hours or 0, minutes or 0, seconds or 0,
+            tzinfo=tz
         )
 
     # last case, only time, then next time
@@ -72,7 +76,8 @@ def schedule_send_email(
         year: Optional[int] = None,
         days_count_from_today: Optional[int] = None,
         day_string: Optional[str] = None,
-        user_id: str = "tester-user-001"
+        user_id: str = "tester-user-001",
+        timezone: str = "UTC"
 ):
     """
     schedules email to send, if succeeded, you should return the scheduled datetime to the user in human-readable way
@@ -91,7 +96,7 @@ def schedule_send_email(
     :return: success or failure message
     """
     response = None
-    dt = get_iso_based_on_args(seconds, minutes, hours, day_of_month, month, year, days_count_from_today, day_string)
+    dt = get_iso_based_on_args(seconds, minutes, hours, day_of_month, month, year, days_count_from_today, day_string, timezone)
 
     endpoint = f"{schedule_protocol}://{schedule_host}:{schedule_port}/schedule_one_shot"
 

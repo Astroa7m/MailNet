@@ -9,13 +9,10 @@ from typing import cast, Optional
 
 import redis
 from itsdangerous import TimestampSigner
-from langchain.agents.middleware import wrap_tool_call
-from langchain_core.messages import ToolMessage
-from langgraph.checkpoint.mongodb import MongoDBSaver
-from pymongo import MongoClient
 from langgraph.graph.state import CompiledStateGraph
 
-from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed
+from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
+    build_agent
 
 # adding project root to path
 project_root = Path(__file__).parent.parent
@@ -24,17 +21,11 @@ if str(project_root) not in sys.path:
 
 import chainlit as cl
 from dotenv import load_dotenv
-from langchain.agents import create_agent
-from langchain_groq import ChatGroq
-from langchain_mcp_adapters.client import MultiServerMCPClient
-
-from app.extra_tools import schedule_send_email
 
 load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET")
 
 redis_client = redis.asyncio.from_url(os.getenv("REDIS_URL"))
-checkpointer = MongoDBSaver(MongoClient(os.getenv("MONGO_DB_URL")), db_name="MailNet")
 
 
 @cl.header_auth_callback
@@ -92,37 +83,12 @@ async def header_auth(headers: dict) -> Optional[cl.User]:
                 "google_token": google_token,
                 "azure_token": microsoft_token,
                 "redis_user_id": user_id,
+                "tz": session_data.get("tz", "UTC"),
             }
         )
     except Exception as e:
         print(f"Error decoding session: {e}")
         return None
-
-
-async def _build_agent(azure_token, google_token, checkpointer):
-    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
-    mcp_client = MultiServerMCPClient(
-        {
-            "email_mcp": {
-                "transport": "streamable_http",
-                "url": "http://localhost:9111/mcp",
-                "headers": {
-                    "azure_token": encrypt_payload(azure_token),
-                    "google_token": encrypt_payload(google_token),
-                    "redirect_uri": "http://localhost/"
-                }
-            }
-        }
-    )
-    mcp_tools = await mcp_client.get_tools()
-    tools = mcp_tools + [schedule_send_email]
-    return create_agent(
-        llm,
-        tools,
-        system_prompt="You are a helpful assistant, do not call a tool unless told.",
-        checkpointer=checkpointer,
-        middleware=[handle_tool_errors]
-    )
 
 
 @cl.on_chat_start
@@ -147,7 +113,10 @@ async def on_chat_start():
     cl.user_session.set("google_token", google_token)
     cl.user_session.set("redis_user_id", user.metadata.get("redis_user_id"))
 
-    agent = await _build_agent(azure_token, google_token, checkpointer)
+    user_tz = user.metadata.get("tz", "UTC")
+    cl.user_session.set("tz", user_tz)
+
+    agent = await build_agent(azure_token, google_token, user_tz)
     config = {"configurable": {"thread_id": cl.user_session.get("id")}}
 
     cl.user_session.set("agent", agent)
@@ -192,7 +161,7 @@ async def on_message(message: cl.Message):
                 print(f"[CHAT] Failed to update Redis session after token refresh: {e}")
 
         # rebuild agent with fresh token headers
-        agent = await _build_agent(azure_token, google_token, checkpointer)
+        agent = await build_agent(azure_token, google_token, cl.user_session.get("tz", "UTC"))
         cl.user_session.set("agent", agent)
 
     agent = cast(CompiledStateGraph, cl.user_session.get("agent"))
@@ -254,18 +223,6 @@ async def on_message(message: cl.Message):
 async def on_logout(request, response):
     print("[CHAINLIT] Reached logout route")
     request.session.clear()
-
-
-@wrap_tool_call
-async def handle_tool_errors(request, handler):
-    try:
-        return await handler(request)
-    except Exception as e:
-        return ToolMessage(
-            content=f"Tool error: Please check your input and try again. ({str(e)})",
-            tool_call_id=request.tool_call["id"],
-            is_error=True
-        )
 
 
 @cl.on_chat_end

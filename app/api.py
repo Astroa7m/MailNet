@@ -1,14 +1,18 @@
 import datetime
 import os
+import sys
+from pathlib import Path
 
+from ag_ui.core.types import RunAgentInput
+from ag_ui.encoder import EventEncoder
+from copilotkit import LangGraphAGUIAgent
 import redis
 import uvicorn
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
-from chainlit.utils import mount_chainlit
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -16,15 +20,21 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette_session import SessionMiddleware, BackendType
 
-from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed
+from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
+    build_agent
 
 load_dotenv()
+
+# adding project root to path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
+is_not_using_copilot_kit = os.getenv("UI_PROVIDER", "custom") == "chainlit"
 CHAINLIT_URL = os.getenv("CHAINLIT_URL")
 JWT_SECRET = os.getenv("JWT_SECRET")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -79,7 +89,8 @@ redis_client = redis.from_url(
     decode_responses=False,
 )
 
-app.add_middleware(ChainlitAuthMiddleware)
+if is_not_using_copilot_kit:
+    app.add_middleware(ChainlitAuthMiddleware)
 
 app.add_middleware(
     SessionMiddleware,
@@ -138,13 +149,60 @@ oauth.register(
     }
 )
 
-mount_chainlit(app=app, target="chatting_ui.py", path="/chat")
+# swtiching uis
+UI_PROVIDER = os.getenv("UI_PROVIDER", "custom")
+
+if is_not_using_copilot_kit:
+    from chainlit.utils import mount_chainlit
+
+    mount_chainlit(app=app, target=r"C:\Users\ahmed\PycharmProjects\MailNet\app\chatting_ui.py", path="/chat")
+else:
+    @app.post("/agent")
+    async def agent_endpoint(input_data: RunAgentInput, request: Request):
+        if not request.session.get("user"):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        azure_token = None
+        google_token = None
+
+        encrypted_azure = request.session.get("azure_token")
+        if encrypted_azure:
+            azure_token = decrypt_payload(encrypted_azure)
+            fresh = await refresh_microsoft_token_if_needed(azure_token)
+            if fresh != azure_token:
+                azure_token = fresh
+                request.session["azure_token"] = encrypt_payload(fresh)
+
+        encrypted_google = request.session.get("google_token")
+        if encrypted_google:
+            google_token = decrypt_payload(encrypted_google)
+            fresh = await refresh_google_token_if_needed(google_token)
+            if fresh != google_token:
+                google_token = fresh
+                request.session["google_token"] = encrypt_payload(fresh)
+
+        user_tz = request.session.get("tz", "UTC")
+
+        graph = await build_agent(azure_token, google_token, user_tz)
+        agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
+
+        encoder = EventEncoder(accept=request.headers.get("accept"))
+        return StreamingResponse(
+            (encoder.encode(e) async for e in agent.run(input_data)),  # type: ignore
+            media_type=encoder.get_content_type()
+        )
+
+
+    @app.get("/agent/health")
+    def agent_health():
+        return {"status": "ok", "agent": {"name": "Mailing Agent"}}
 
 
 @app.get("/", response_class=HTMLResponse)
 async def login_page(request: Request):
     if request.session.get("user"):
-        return RedirectResponse(url="/chat")
+        FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+        return RedirectResponse(url=FRONT_END_URL)
     return templates.TemplateResponse("login.html", {"request": request})
 
 
@@ -152,6 +210,7 @@ async def login_page(request: Request):
 @app.get("/login/google")
 @limiter.limit("20/minute")
 async def login_google(request: Request):
+    request.session["tz"] = request.query_params.get("tz", "UTC")
     redirect_uri = request.url_for("auth_google")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
@@ -195,13 +254,15 @@ async def auth_google(request: Request):
     }
 
     request.session['google_token'] = encrypt_payload(google_token_json)
-    return RedirectResponse(url="/chat")
+    FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+    return RedirectResponse(url=FRONT_END_URL)
 
 
 # Microsoft
 @app.get("/login/microsoft")
 @limiter.limit("20/minute")
 async def login_microsoft(request: Request):
+    request.session["tz"] = request.query_params.get("tz", "UTC")
     redirect_uri = request.url_for("auth_microsoft")
     return await oauth.microsoft.authorize_redirect(request, redirect_uri)
 
@@ -221,7 +282,8 @@ async def auth_microsoft(request: Request):
         }
 
         request.session['azure_token'] = encrypt_payload(dict(token))
-        return RedirectResponse(url="/chat")
+        FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+        return RedirectResponse(url=FRONT_END_URL)
     except OAuthError:
         return RedirectResponse(url="/")
 
