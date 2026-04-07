@@ -12,6 +12,7 @@ from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -31,6 +32,13 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -198,6 +206,26 @@ else:
         return {"status": "ok", "agent": {"name": "Mailing Agent"}}
 
 
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    response = RedirectResponse(url="/")
+    return response
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page_direct(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/me")
+async def get_me(request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"name": user.get("name", ""), "email": user.get("email", ""), "picture": user.get("picture", "")}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def login_page(request: Request):
     if request.session.get("user"):
@@ -271,7 +299,10 @@ async def login_microsoft(request: Request):
 @limiter.limit("20/minute")
 async def auth_microsoft(request: Request):
     try:
-        token = await oauth.microsoft.authorize_access_token(request)
+        token = await oauth.microsoft.authorize_access_token(
+            request,
+            claims_options={"iss": {"essential": False}}
+        )
         user_info = token.get("userinfo")
 
         request.session["user"] = {

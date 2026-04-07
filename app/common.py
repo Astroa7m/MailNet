@@ -5,6 +5,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+from langgraph.checkpoint.memory import InMemorySaver
+
 # adding project root to path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -17,8 +20,6 @@ from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.checkpoint.mongodb import MongoDBSaver
-from pymongo import MongoClient
 
 from app.extra_tools import schedule_send_email
 
@@ -105,8 +106,9 @@ async def refresh_google_token_if_needed(token: dict) -> dict:
 
 
 async def build_agent(azure_token, google_token, user_tz="UTC"):
-    checkpointer = MongoDBSaver(MongoClient(os.getenv("MONGO_DB_URL")), db_name="MailNet")
-    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b")
+    # checkpointer = MongoDBSaver(MongoClient(os.getenv("MONGO_DB_URL"), tlsCAFile=certifi.where()), db_name="MailNet")
+    checkpointer = InMemorySaver()
+    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b", streaming=True)
     mcp_client = MultiServerMCPClient(
         {
             "email_mcp": {

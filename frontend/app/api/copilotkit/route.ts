@@ -3,8 +3,7 @@ import {
   ExperimentalEmptyAdapter,
   copilotRuntimeNextJSAppRouterEndpoint,
 } from "@copilotkit/runtime";
-//import { HttpAgent } from "@ag-ui/client";
-import { LangGraphHttpAgent } from "@copilotkit/runtime/langgraph";
+import { HttpAgent } from "@ag-ui/client";
 
 import { NextRequest } from "next/server";
 
@@ -13,7 +12,7 @@ export const POST = async (req: NextRequest) => {
 
   const runtime = new CopilotRuntime({
     agents: {
-      sample_agent: new LangGraphHttpAgent({
+      sample_agent: new HttpAgent({
         url: process.env.FASTAPI_URL || "http://localhost:8002/agent",
         headers: { cookie },
       }),
