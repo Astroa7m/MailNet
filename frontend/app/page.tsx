@@ -2,11 +2,13 @@
 import { useEffect, useState, useRef } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
+import { useSidebar } from "./components/SidebarContext";
 
 export default function Home() {
   const [user, setUser] = useState<{ name: string; email: string; picture: string } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
 
   useEffect(() => {
     fetch("http://localhost:8002/me", { credentials: "include" })
@@ -37,7 +39,14 @@ export default function Home() {
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
-        <span className="font-semibold text-lg">MailNet</span>
+        <div className="flex items-center gap-3">
+            {!sidebarOpen && (
+              <button onClick={toggleSidebar} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500" title="Open sidebar">
+                &#9776;
+              </button>
+            )}
+            <span className="font-semibold text-lg">MailNet</span>
+          </div>
         {user && (
           <div className="relative" ref={dropdownRef}>
             <button
@@ -86,10 +95,7 @@ export default function Home() {
       <div className="flex-1 overflow-hidden">
         <CopilotChat
           className="h-full"
-          labels={{
-            title: "MailNet Assistant",
-            welcomeMessageText: user?.name ? `Hi ${user.name}! Let's get your email sorted!` : "Hi! Let's get your email sorted!",
-          }}
+          labels={{ title: "MailNet Assistant" }}
         />
       </div>
     </div>

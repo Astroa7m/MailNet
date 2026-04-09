@@ -1,6 +1,7 @@
 import datetime
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from ag_ui.core.types import RunAgentInput
@@ -21,8 +22,9 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette_session import SessionMiddleware, BackendType
 
+from bson import ObjectId
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
-    build_agent
+    build_agent, get_or_create_user, db
 
 load_dotenv()
 
@@ -167,7 +169,8 @@ if is_not_using_copilot_kit:
 else:
     @app.post("/agent")
     async def agent_endpoint(input_data: RunAgentInput, request: Request):
-        if not request.session.get("user"):
+        user = request.session.get("user")
+        if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
 
         azure_token = None
@@ -191,7 +194,28 @@ else:
 
         user_tz = request.session.get("tz", "UTC")
 
-        graph = await build_agent(azure_token, google_token, user_tz)
+        # lazy thread creation, only save to DB on first message
+        thread_id = input_data.thread_id
+        if thread_id and not db["threads"].find_one({"thread_id": thread_id}):
+            title = "New conversation"
+            user_msgs = [m for m in input_data.messages if m.role == "user"]
+            if user_msgs:
+                content = user_msgs[-1].content
+                if isinstance(content, str):
+                    title = content[:60].strip() or title
+                elif isinstance(content, list):
+                    for part in content:
+                        if hasattr(part, "text") and part.text:
+                            title = part.text[:60].strip() or title
+                            break
+            db["threads"].insert_one({
+                "thread_id": thread_id,
+                "user_id": user["id"],
+                "name": title,
+                "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000),
+            })
+
+        graph = await build_agent(azure_token, google_token, user_tz, user_id=user["id"])
         agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
 
         encoder = EventEncoder(accept=request.headers.get("accept"))
@@ -249,26 +273,29 @@ async def auth_google(request: Request):
     token = await oauth.google.authorize_access_token(request)
     user_info = token.get("userinfo")
 
+    email = user_info["email"]
+    name = user_info.get("name", "")
+    picture = user_info.get("picture", "")
+
+    user = get_or_create_user(email, name, picture, "google")
     request.session["user"] = {
-        "email": user_info["email"],
-        "name": user_info.get("name", ""),
-        "picture": user_info.get("picture", ""),
+        "id": user["_id"],
+        "email": email,
+        "name": name,
+        "picture": picture,
         "provider": "google",
     }
-    email = user_info["email"]
     refresh_token = token.get("refresh_token")
-    redis_key = f"google_refresh_token:{email}"
 
     if refresh_token:
-        print("getting refresh from google")
-        # save refresh tokens for future logins
-        redis_client.set(redis_key, refresh_token)
+        db["users"].update_one(
+            {"google_email": email},
+            {"$set": {"google_refresh_token": encrypt_payload({"token": refresh_token})}}
+        )
     else:
-        # reuse the one we saved previously
-        saved = redis_client.get(redis_key)
-        if saved:
-            print("getting refresh from redis")
-            refresh_token = saved.decode() if isinstance(saved, bytes) else saved
+        user_doc = db["users"].find_one({"google_email": email})
+        if user_doc and user_doc.get("google_refresh_token"):
+            refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
 
     # for mcp format
     google_token_json = {
@@ -305,18 +332,168 @@ async def auth_microsoft(request: Request):
         )
         user_info = token.get("userinfo")
 
+        email = user_info.get("email") or user_info.get("preferred_username", "")
+        name = user_info.get("name", "")
+        picture = user_info.get("picture", "")
+
+        user = get_or_create_user(email, name, picture, "microsoft")
         request.session["user"] = {
-            "email": user_info.get("email") or user_info.get("preferred_username", ""),
-            "name": user_info.get("name", ""),
-            "picture": user_info.get("picture", ""),
+            "id": user["_id"],
+            "email": email,
+            "name": name,
+            "picture": picture,
             "provider": "microsoft",
         }
+
+        refresh_token = token.get("refresh_token")
+        if refresh_token:
+            db["users"].update_one(
+                {"outlook_email": email},
+                {"$set": {"microsoft_refresh_token": encrypt_payload({"token": refresh_token})}}
+            )
 
         request.session['azure_token'] = encrypt_payload(dict(token))
         FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
         return RedirectResponse(url=FRONT_END_URL)
     except OAuthError:
         return RedirectResponse(url="/")
+
+
+@app.get("/connect/google")
+async def connect_google(request: Request):
+    if not request.session.get("user"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    redirect_uri = request.url_for("auth_connect_google")
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/auth/connect/google", name="auth_connect_google")
+async def auth_connect_google(request: Request):
+    if not request.session.get("user"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    token = await oauth.google.authorize_access_token(request)
+    user_info = token.get("userinfo")
+    email = user_info["email"]
+    refresh_token = token.get("refresh_token")
+
+    if refresh_token:
+        db["users"].update_one(
+            {"_id": ObjectId(request.session["user"]["id"])},
+            {"$set": {"google_refresh_token": encrypt_payload({"token": refresh_token})}}
+        )
+    else:
+        user_doc = db["users"].find_one({"_id": ObjectId(request.session["user"]["id"])})
+        if user_doc and user_doc.get("google_refresh_token"):
+            refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
+
+    google_token_json = {
+        "token": token["access_token"],
+        "refresh_token": refresh_token,
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+        "scopes": token["scope"].split(" "),
+        "expiry": datetime.datetime.fromtimestamp(token["expires_at"], datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    }
+
+    # link google_email to the existing user document
+    # TODO: if another document already has this google_email (orphan from a prior standalone login),
+    # merge its data (refresh tokens, preferences, threads) into this document then delete the orphan.
+    # Implement after steps 2 (threads) and 3 (preferences) are complete.
+    db["users"].update_one(
+        {"_id": ObjectId(request.session["user"]["id"])},
+        {
+            "$set": {"google_email": email},
+            "$addToSet": {"providers": "google"},
+        }
+    )
+
+    request.session["google_token"] = encrypt_payload(google_token_json)
+    FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    return RedirectResponse(url=FRONT_END_URL)
+
+
+@app.get("/connect/microsoft")
+async def connect_microsoft(request: Request):
+    if not request.session.get("user"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    redirect_uri = request.url_for("auth_connect_microsoft")
+    return await oauth.microsoft.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/auth/connect/microsoft", name="auth_connect_microsoft")
+async def auth_connect_microsoft(request: Request):
+    if not request.session.get("user"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        token = await oauth.microsoft.authorize_access_token(
+            request,
+            claims_options={"iss": {"essential": False}}
+        )
+        user_info = token.get("userinfo")
+        email = user_info.get("email") or user_info.get("preferred_username", "")
+
+        refresh_token = token.get("refresh_token")
+        # TODO: if another document already has this outlook_email (orphan from a prior standalone login),
+        # merge its data (refresh tokens, preferences, threads) into this document then delete the orphan.
+        # Implement after steps 2 (threads) and 3 (preferences) are complete.
+        set_fields = {"outlook_email": email}
+        if refresh_token:
+            set_fields["microsoft_refresh_token"] = encrypt_payload({"token": refresh_token})
+
+        db["users"].update_one(
+            {"_id": ObjectId(request.session["user"]["id"])},
+            {
+                "$set": set_fields,
+                "$addToSet": {"providers": "microsoft"},
+            }
+        )
+
+        request.session["azure_token"] = encrypt_payload(dict(token))
+        FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        return RedirectResponse(url=FRONT_END_URL)
+    except OAuthError:
+        return RedirectResponse(url="/")
+
+
+@app.get("/threads")
+async def get_threads(request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    threads = list(db["threads"].find(
+        {"user_id": user["id"]},
+        {"_id": 0}
+    ).sort("created_at", -1))
+    return threads
+
+
+@app.post("/threads")
+async def create_thread(request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    thread = {
+        "thread_id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "name": "New conversation",
+        "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000),
+    }
+    db["threads"].insert_one(thread)
+    thread.pop("_id", None)
+    return thread
+
+
+@app.delete("/threads/{thread_id}")
+async def delete_thread(thread_id: str, request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    result = db["threads"].delete_one({"thread_id": thread_id, "user_id": user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"ok": True}
 
 
 if __name__ == "__main__":

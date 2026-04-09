@@ -4,9 +4,10 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from pymongo import MongoClient
 
 # adding project root to path
 project_root = Path(__file__).parent.parent
@@ -15,6 +16,7 @@ if str(project_root) not in sys.path:
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+from bson import ObjectId
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
@@ -26,6 +28,24 @@ from app.extra_tools import schedule_send_email
 load_dotenv()
 
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+
+mongo_client = MongoClient(os.getenv("MONGO_DB_URL"))
+db = mongo_client["MailNet"]
+
+DEFAULT_PREFERENCES = {
+    "language": "en",
+    "tone": "formal",
+    "writing_style": "clear_and_concise",
+    "sender_name": "",
+    "organization_name": "",
+    "include_signature": True,
+    "signature": "Best regards,\n{{sender_name}}",
+    "preferred_greeting": "Dear {{recipient_name}},",
+    "auto_adjust_tone": True,
+    "include_thread_context": True,
+    "character_limit": 1000,
+    "default_provider": "google",
+}
 
 
 def encrypt_payload(creds: dict) -> str:
@@ -48,6 +68,40 @@ def decrypt_payload(encrypted: str) -> dict:
         return json.loads(decrypted.decode())
     except Exception as e:
         raise ValueError(f"Decryption failed: {e}")
+
+
+def get_or_create_user(email: str, name: str, picture: str, provider: Literal["google", "microsoft"]) -> dict:
+    """
+    Looks up a user by their provider email. Creates one if not found.
+    Returns the user document with _id as a string.
+    """
+    email_field = "google_email" if provider == "google" else "outlook_email"
+    user = db["users"].find_one({email_field: email})
+
+    if user:
+        db["users"].update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {"name": name, "picture": picture},
+                "$addToSet": {"providers": provider},
+            }
+        )
+        user = db["users"].find_one({"_id": user["_id"]})
+    else:
+        new_user = {
+            "google_email": email if provider == "google" else None,
+            "outlook_email": email if provider == "microsoft" else None,
+            "name": name,
+            "picture": picture,
+            "providers": [provider],
+            "preferences": DEFAULT_PREFERENCES.copy(),
+            "created_at": datetime.datetime.now(datetime.timezone.utc),
+        }
+        result = db["users"].insert_one(new_user)
+        user = db["users"].find_one({"_id": result.inserted_id})
+
+    user["_id"] = str(user["_id"])
+    return user
 
 
 async def refresh_microsoft_token_if_needed(token: dict) -> dict:
@@ -105,9 +159,9 @@ async def refresh_google_token_if_needed(token: dict) -> dict:
         }
 
 
-async def build_agent(azure_token, google_token, user_tz="UTC"):
-    # checkpointer = MongoDBSaver(MongoClient(os.getenv("MONGO_DB_URL"), tlsCAFile=certifi.where()), db_name="MailNet")
-    checkpointer = InMemorySaver()
+async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
+    checkpointer = MongoDBSaver(mongo_client, db_name="MailNet")
+    # checkpointer = InMemorySaver()
     llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b", streaming=True)
     mcp_client = MultiServerMCPClient(
         {
@@ -122,7 +176,10 @@ async def build_agent(azure_token, google_token, user_tz="UTC"):
             }
         }
     )
-    mcp_tools = await mcp_client.get_tools()
+    mcp_tools = [
+        t for t in await mcp_client.get_tools()
+        if t.name not in ("load_email_settings", "update_email_settings")
+    ]
 
     def bound_schedule_send_email(
             to: str, subject: str, body: str,
@@ -140,7 +197,31 @@ async def build_agent(azure_token, google_token, user_tz="UTC"):
             user_id=user_id, timezone=user_tz,
         )
 
-    tools = mcp_tools + [bound_schedule_send_email]
+    def load_email_settings() -> dict:
+        """Load the user's email preferences (language, tone, signature, etc.)."""
+        if not user_id:
+            return DEFAULT_PREFERENCES.copy()
+        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1})
+        if not user_doc or "preferences" not in user_doc:
+            return DEFAULT_PREFERENCES.copy()
+        return user_doc["preferences"]
+
+    def update_email_settings(updates_json: str) -> str:
+        """Update the user's email preferences. Pass a JSON string with the fields to change.
+        Available fields: language, tone, writing_style, sender_name, organization_name,
+        include_signature, signature, preferred_greeting, auto_adjust_tone,
+        include_thread_context, character_limit, default_provider."""
+        if not user_id:
+            return "Cannot update settings: no user context."
+        try:
+            updates = json.loads(updates_json)
+            set_fields = {f"preferences.{k}": v for k, v in updates.items()}
+            db["users"].update_one({"_id": ObjectId(user_id)}, {"$set": set_fields})
+            return "Settings updated successfully."
+        except Exception as e:
+            return f"Failed to update settings: {e}"
+
+    tools = mcp_tools + [bound_schedule_send_email, load_email_settings, update_email_settings]
     return create_agent(
         llm,
         tools,

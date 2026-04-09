@@ -12,7 +12,7 @@ export const POST = async (req: NextRequest) => {
 
   const runtime = new CopilotRuntime({
     agents: {
-      sample_agent: new HttpAgent({
+      mailing_net_agent: new HttpAgent({
         url: process.env.FASTAPI_URL || "http://localhost:8002/agent",
         headers: { cookie },
       }),
