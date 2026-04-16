@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from string import Template
 from typing import Optional, Literal
 
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -47,6 +48,25 @@ DEFAULT_PREFERENCES = {
     "default_provider": "google",
 }
 
+SYSTEM_PROMPT = Template(
+    """
+    You are MailNet, an AI email assistant. You help users read, compose, send, draft, reply to, search, archive, and schedule emails.
+    
+    User preferences, always apply when composing or replying:
+    - Language: $language
+    - Tone: $tone
+    - Writing style: $writing_style
+    - Sender name: $sender_name
+    - Organization: $organization_name
+    - Greeting: $preferred_greeting
+    - Signature: $signature (enabled: $include_signature)
+    - Character limit: $character_limit characters
+    - Auto-adjust tone: $auto_adjust_tone
+    
+    If information needed to complete a task is missing, ask, don't guess. Keep responses concise.
+    """
+)
+
 
 def encrypt_payload(creds: dict) -> str:
     """Encrypt credentials before sending"""
@@ -88,13 +108,16 @@ def get_or_create_user(email: str, name: str, picture: str, provider: Literal["g
         )
         user = db["users"].find_one({"_id": user["_id"]})
     else:
+        pref = DEFAULT_PREFERENCES.copy()
+        pref['sender_name'] = name
+
         new_user = {
             "google_email": email if provider == "google" else None,
             "outlook_email": email if provider == "microsoft" else None,
             "name": name,
             "picture": picture,
             "providers": [provider],
-            "preferences": DEFAULT_PREFERENCES.copy(),
+            "preferences": pref,
             "created_at": datetime.datetime.now(datetime.timezone.utc),
         }
         result = db["users"].insert_one(new_user)
@@ -221,11 +244,37 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
         except Exception as e:
             return f"Failed to update settings: {e}"
 
-    tools = mcp_tools + [bound_schedule_send_email, load_email_settings, update_email_settings]
+    """
+     Language: $language
+    - Tone: $tone
+    - Writing style: $writing_style
+    - Sender name: $sender_name
+    - Organization: $organization_name
+    - Greeting: $preferred_greeting
+    - Signature: $signature (enabled: $include_signature)
+    - Character limit: $character_limit characters
+    - Auto-adjust tone: $auto_adjust_tone
+    
+    """
+    email_settings = load_email_settings()
+
+    formatted_sys_prompt = SYSTEM_PROMPT.substitute(language=email_settings['language'],
+                                               tone=email_settings['tone'],
+                                               writing_style=email_settings['writing_style'],
+                                               sender_name=email_settings['sender_name'],
+                                               organization_name=email_settings['organization_name'],
+                                               preferred_greeting = email_settings['preferred_greeting'],
+                                               signature=email_settings['signature'],
+                                               include_signature=email_settings['include_signature'],
+                                               character_limit = email_settings['character_limit'],
+                                               auto_adjust_tone=email_settings['auto_adjust_tone']
+                                               )
+    print(f"sys={formatted_sys_prompt}")
+    tools = mcp_tools + [bound_schedule_send_email, update_email_settings]
     return create_agent(
         llm,
         tools,
-        system_prompt="You are a helpful assistant, do not call a tool unless told.",
+        system_prompt=formatted_sys_prompt,
         checkpointer=checkpointer,
         middleware=[handle_tool_errors]
     )
