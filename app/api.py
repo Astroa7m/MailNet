@@ -192,6 +192,38 @@ else:
                 google_token = fresh
                 request.session["google_token"] = encrypt_payload(fresh)
 
+        # restore missing tokens from MongoDB refresh tokens (e.g. second provider after re-login)
+        if not encrypted_google or not encrypted_azure:
+            user_doc = db["users"].find_one(
+                {"_id": ObjectId(user["id"])},
+                {"google_refresh_token": 1, "microsoft_refresh_token": 1}
+            )
+            if user_doc:
+                if not encrypted_google and user_doc.get("google_refresh_token"):
+                    try:
+                        stored_refresh = decrypt_payload(user_doc["google_refresh_token"])["token"]
+                        minimal = {
+                            "token": "", "refresh_token": stored_refresh,
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                            "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                            "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                            "scopes": ["https://mail.google.com/"],
+                            "expiry": "2000-01-01T00:00:00Z",
+                        }
+                        google_token = await refresh_google_token_if_needed(minimal)
+                        request.session["google_token"] = encrypt_payload(google_token)
+                    except Exception:
+                        pass
+
+                if not encrypted_azure and user_doc.get("microsoft_refresh_token"):
+                    try:
+                        stored_refresh = decrypt_payload(user_doc["microsoft_refresh_token"])["token"]
+                        minimal = {"refresh_token": stored_refresh, "expires_at": 0}
+                        azure_token = await refresh_microsoft_token_if_needed(minimal)
+                        request.session["azure_token"] = encrypt_payload(azure_token)
+                    except Exception:
+                        pass
+
         user_tz = request.session.get("tz", "UTC")
 
         # lazy thread creation, only save to DB on first message
@@ -247,7 +279,14 @@ async def get_me(request: Request):
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"name": user.get("name", ""), "email": user.get("email", ""), "picture": user.get("picture", "")}
+    user_doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"providers": 1})
+    providers = user_doc.get("providers", [user.get("provider", "google")]) if user_doc else [user.get("provider", "google")]
+    return {
+        "name": user.get("name", ""),
+        "email": user.get("email", ""),
+        "picture": user.get("picture", ""),
+        "providers": providers,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -272,32 +311,9 @@ async def login_google(request: Request):
 async def auth_google(request: Request):
     token = await oauth.google.authorize_access_token(request)
     user_info = token.get("userinfo")
-
     email = user_info["email"]
-    name = user_info.get("name", "")
-    picture = user_info.get("picture", "")
-
-    user = get_or_create_user(email, name, picture, "google")
-    request.session["user"] = {
-        "id": user["_id"],
-        "email": email,
-        "name": name,
-        "picture": picture,
-        "provider": "google",
-    }
     refresh_token = token.get("refresh_token")
 
-    if refresh_token:
-        db["users"].update_one(
-            {"google_email": email},
-            {"$set": {"google_refresh_token": encrypt_payload({"token": refresh_token})}}
-        )
-    else:
-        user_doc = db["users"].find_one({"google_email": email})
-        if user_doc and user_doc.get("google_refresh_token"):
-            refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
-
-    # for mcp format
     google_token_json = {
         "token": token["access_token"],
         "refresh_token": refresh_token,
@@ -308,8 +324,49 @@ async def auth_google(request: Request):
         "expiry": datetime.datetime.fromtimestamp(token["expires_at"], datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     }
 
-    request.session['google_token'] = encrypt_payload(google_token_json)
-    FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+    if request.session.pop("connecting", False):
+        # linking flow: attach google account to existing user
+        if refresh_token:
+            db["users"].update_one(
+                {"_id": ObjectId(request.session["user"]["id"])},
+                {"$set": {"google_refresh_token": encrypt_payload({"token": refresh_token})}}
+            )
+        else:
+            user_doc = db["users"].find_one({"_id": ObjectId(request.session["user"]["id"])})
+            if user_doc and user_doc.get("google_refresh_token"):
+                refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
+                google_token_json["refresh_token"] = refresh_token
+
+        # TODO: merge orphan document if another user already has this google_email
+        db["users"].update_one(
+            {"_id": ObjectId(request.session["user"]["id"])},
+            {"$set": {"google_email": email}, "$addToSet": {"providers": "google"}}
+        )
+        request.session["google_token"] = encrypt_payload(google_token_json)
+        FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    else:
+        # normal login flow
+        name = user_info.get("name", "")
+        picture = user_info.get("picture", "")
+        user = get_or_create_user(email, name, picture, "google")
+        request.session["user"] = {
+            "id": user["_id"], "email": email,
+            "name": name, "picture": picture, "provider": "google",
+        }
+        if refresh_token:
+            db["users"].update_one(
+                {"google_email": email},
+                {"$set": {"google_refresh_token": encrypt_payload({"token": refresh_token})}}
+            )
+        else:
+            user_doc = db["users"].find_one({"google_email": email})
+            if user_doc and user_doc.get("google_refresh_token"):
+                refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
+                google_token_json["refresh_token"] = refresh_token
+
+        request.session["google_token"] = encrypt_payload(google_token_json)
+        FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+
     return RedirectResponse(url=FRONT_END_URL)
 
 
@@ -331,29 +388,39 @@ async def auth_microsoft(request: Request):
             claims_options={"iss": {"essential": False}}
         )
         user_info = token.get("userinfo")
-
         email = user_info.get("email") or user_info.get("preferred_username", "")
-        name = user_info.get("name", "")
-        picture = user_info.get("picture", "")
-
-        user = get_or_create_user(email, name, picture, "microsoft")
-        request.session["user"] = {
-            "id": user["_id"],
-            "email": email,
-            "name": name,
-            "picture": picture,
-            "provider": "microsoft",
-        }
-
         refresh_token = token.get("refresh_token")
-        if refresh_token:
-            db["users"].update_one(
-                {"outlook_email": email},
-                {"$set": {"microsoft_refresh_token": encrypt_payload({"token": refresh_token})}}
-            )
 
-        request.session['azure_token'] = encrypt_payload(dict(token))
-        FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+        if request.session.pop("connecting", False):
+            # linking flow: attach microsoft account to existing user
+            set_fields = {"outlook_email": email}
+            if refresh_token:
+                set_fields["microsoft_refresh_token"] = encrypt_payload({"token": refresh_token})
+
+            # TODO: merge orphan document if another user already has this outlook_email
+            db["users"].update_one(
+                {"_id": ObjectId(request.session["user"]["id"])},
+                {"$set": set_fields, "$addToSet": {"providers": "microsoft"}}
+            )
+            request.session["azure_token"] = encrypt_payload(dict(token))
+            FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        else:
+            # — normal login flow —
+            name = user_info.get("name", "")
+            picture = user_info.get("picture", "")
+            user = get_or_create_user(email, name, picture, "microsoft")
+            request.session["user"] = {
+                "id": user["_id"], "email": email,
+                "name": name, "picture": picture, "provider": "microsoft",
+            }
+            if refresh_token:
+                db["users"].update_one(
+                    {"outlook_email": email},
+                    {"$set": {"microsoft_refresh_token": encrypt_payload({"token": refresh_token})}}
+                )
+            request.session["azure_token"] = encrypt_payload(dict(token))
+            FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
+
         return RedirectResponse(url=FRONT_END_URL)
     except OAuthError:
         return RedirectResponse(url="/")
@@ -363,98 +430,41 @@ async def auth_microsoft(request: Request):
 async def connect_google(request: Request):
     if not request.session.get("user"):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    redirect_uri = request.url_for("auth_connect_google")
-    return await oauth.google.authorize_redirect(request, redirect_uri)
-
-
-@app.get("/auth/connect/google", name="auth_connect_google")
-async def auth_connect_google(request: Request):
-    if not request.session.get("user"):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    token = await oauth.google.authorize_access_token(request)
-    user_info = token.get("userinfo")
-    email = user_info["email"]
-    refresh_token = token.get("refresh_token")
-
-    if refresh_token:
-        db["users"].update_one(
-            {"_id": ObjectId(request.session["user"]["id"])},
-            {"$set": {"google_refresh_token": encrypt_payload({"token": refresh_token})}}
-        )
-    else:
-        user_doc = db["users"].find_one({"_id": ObjectId(request.session["user"]["id"])})
-        if user_doc and user_doc.get("google_refresh_token"):
-            refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
-
-    google_token_json = {
-        "token": token["access_token"],
-        "refresh_token": refresh_token,
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-        "scopes": token["scope"].split(" "),
-        "expiry": datetime.datetime.fromtimestamp(token["expires_at"], datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    }
-
-    # link google_email to the existing user document
-    # TODO: if another document already has this google_email (orphan from a prior standalone login),
-    # merge its data (refresh tokens, preferences, threads) into this document then delete the orphan.
-    # Implement after steps 2 (threads) and 3 (preferences) are complete.
-    db["users"].update_one(
-        {"_id": ObjectId(request.session["user"]["id"])},
-        {
-            "$set": {"google_email": email},
-            "$addToSet": {"providers": "google"},
-        }
-    )
-
-    request.session["google_token"] = encrypt_payload(google_token_json)
-    FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-    return RedirectResponse(url=FRONT_END_URL)
+    request.session["connecting"] = True
+    redirect_uri = request.url_for("auth_google")
+    return await oauth.google.authorize_redirect(request, redirect_uri, prompt="select_account consent")
 
 
 @app.get("/connect/microsoft")
 async def connect_microsoft(request: Request):
     if not request.session.get("user"):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    redirect_uri = request.url_for("auth_connect_microsoft")
-    return await oauth.microsoft.authorize_redirect(request, redirect_uri)
+    request.session["connecting"] = True
+    redirect_uri = request.url_for("auth_microsoft")
+    return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
 
 
-@app.get("/auth/connect/microsoft", name="auth_connect_microsoft")
-async def auth_connect_microsoft(request: Request):
-    if not request.session.get("user"):
+@app.get("/preferences")
+async def get_preferences(request: Request):
+    user = request.session.get("user")
+    if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        token = await oauth.microsoft.authorize_access_token(
-            request,
-            claims_options={"iss": {"essential": False}}
-        )
-        user_info = token.get("userinfo")
-        email = user_info.get("email") or user_info.get("preferred_username", "")
+    user_doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"preferences": 1})
+    if not user_doc or "preferences" not in user_doc:
+        from common import DEFAULT_PREFERENCES
+        return DEFAULT_PREFERENCES.copy()
+    return user_doc["preferences"]
 
-        refresh_token = token.get("refresh_token")
-        # TODO: if another document already has this outlook_email (orphan from a prior standalone login),
-        # merge its data (refresh tokens, preferences, threads) into this document then delete the orphan.
-        # Implement after steps 2 (threads) and 3 (preferences) are complete.
-        set_fields = {"outlook_email": email}
-        if refresh_token:
-            set_fields["microsoft_refresh_token"] = encrypt_payload({"token": refresh_token})
 
-        db["users"].update_one(
-            {"_id": ObjectId(request.session["user"]["id"])},
-            {
-                "$set": set_fields,
-                "$addToSet": {"providers": "microsoft"},
-            }
-        )
-
-        request.session["azure_token"] = encrypt_payload(dict(token))
-        FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-        return RedirectResponse(url=FRONT_END_URL)
-    except OAuthError:
-        return RedirectResponse(url="/")
+@app.patch("/preferences")
+async def update_preferences(request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    updates = await request.json()
+    set_fields = {f"preferences.{k}": v for k, v in updates.items()}
+    db["users"].update_one({"_id": ObjectId(user["id"])}, {"$set": set_fields})
+    return {"ok": True}
 
 
 @app.get("/threads")

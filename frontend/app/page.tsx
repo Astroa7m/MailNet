@@ -3,10 +3,12 @@ import { useEffect, useState, useRef } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import { useSidebar } from "./components/SidebarContext";
+import SettingsModal from "./components/SettingsModal";
 
 export default function Home() {
-  const [user, setUser] = useState<{ name: string; email: string; picture: string } | null>(null);
+  const [user, setUser] = useState<{ name: string; email: string; picture: string; providers: string[] } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
 
@@ -20,7 +22,7 @@ export default function Home() {
         return r.json();
       })
       .then((data) => {
-        if (data) setUser({ name: data.name || "", email: data.email || "", picture: data.picture || "" });
+        if (data) setUser({ name: data.name || "", email: data.email || "", picture: data.picture || "", providers: data.providers || [] });
       })
       .catch(() => { window.location.href = "http://localhost:8002/login"; });
   }, []);
@@ -78,10 +80,16 @@ export default function Home() {
                 </div>
                 <hr className="border-gray-200 dark:border-gray-700 mb-2" />
                 <button
+                  onClick={() => { setSettingsOpen(true); setDropdownOpen(false); }}
+                  className="block w-full text-left text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white py-1 transition-colors"
+                >
+                  Settings
+                </button>
+                <button
                   onClick={() => {
                     window.location.href = "http://localhost:8002/logout";
                   }}
-                  className="block text-sm text-red-500 hover:text-red-600"
+                  className="block text-sm text-red-500 hover:text-red-600 py-1"
                 >
                   Sign out
                 </button>
@@ -90,6 +98,8 @@ export default function Home() {
           </div>
         )}
       </header>
+
+      {settingsOpen && <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} providers={user?.providers ?? []} />}
 
       {/* Chat */}
       <div className="flex-1 overflow-hidden">

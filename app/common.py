@@ -51,7 +51,7 @@ DEFAULT_PREFERENCES = {
 SYSTEM_PROMPT = Template(
     """
     You are MailNet, an AI email assistant. You help users read, compose, send, draft, reply to, search, archive, and schedule emails.
-    
+
     User preferences, always apply when composing or replying:
     - Language: $language
     - Tone: $tone
@@ -62,8 +62,15 @@ SYSTEM_PROMPT = Template(
     - Signature: $signature (enabled: $include_signature)
     - Character limit: $character_limit characters
     - Auto-adjust tone: $auto_adjust_tone
-    
-    If information needed to complete a task is missing, ask, don't guess. Keep responses concise.
+
+    Rules for updating preferences via update_email_settings:
+    - default_provider must be "google" or "microsoft" (lowercase). Refuse any other value (e.g. yahoo, outlook, gmail).
+    - character_limit must be a number between 100 and 5000.
+    - include_signature, auto_adjust_tone, include_thread_context must be true or false.
+    - Refuse offensive, harmful, or nonsensical values (e.g. tone: "rude", language: "gibberish").
+    - Always normalize default_provider to lowercase before saving.
+
+    If information needed to complete a task is missing, ask don't guess. Keep responses concise.
     """
 )
 
@@ -183,6 +190,12 @@ async def refresh_google_token_if_needed(token: dict) -> dict:
 
 
 async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
+    prefs = DEFAULT_PREFERENCES.copy()
+    if user_id:
+        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1})
+        if user_doc and "preferences" in user_doc:
+            prefs = user_doc["preferences"]
+
     checkpointer = MongoDBSaver(mongo_client, db_name="MailNet")
     # checkpointer = InMemorySaver()
     llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b", streaming=True)
@@ -194,11 +207,13 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
                 "headers": {
                     "azure_token": encrypt_payload(azure_token),
                     "google_token": encrypt_payload(google_token),
-                    "redirect_uri": "http://localhost/"
+                    "redirect_uri": "http://localhost/",
+                    "default_provider": prefs.get("default_provider", "google"),
                 }
             }
         }
     )
+
     mcp_tools = [
         t for t in await mcp_client.get_tools()
         if t.name not in ("load_email_settings", "update_email_settings")
@@ -220,15 +235,6 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
             user_id=user_id, timezone=user_tz,
         )
 
-    def load_email_settings() -> dict:
-        """Load the user's email preferences (language, tone, signature, etc.)."""
-        if not user_id:
-            return DEFAULT_PREFERENCES.copy()
-        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1})
-        if not user_doc or "preferences" not in user_doc:
-            return DEFAULT_PREFERENCES.copy()
-        return user_doc["preferences"]
-
     def update_email_settings(updates_json: str) -> str:
         """Update the user's email preferences. Pass a JSON string with the fields to change.
         Available fields: language, tone, writing_style, sender_name, organization_name,
@@ -238,37 +244,43 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
             return "Cannot update settings: no user context."
         try:
             updates = json.loads(updates_json)
+
+            if "default_provider" in updates:
+                val = str(updates["default_provider"]).lower()
+                if val not in ("google", "microsoft"):
+                    return f"Invalid default_provider '{updates['default_provider']}'. Must be 'google' or 'microsoft'."
+                updates["default_provider"] = val
+
+            if "character_limit" in updates:
+                try:
+                    val = int(updates["character_limit"])
+                    if not (100 <= val <= 5000):
+                        return "Invalid character_limit. Must be between 100 and 5000."
+                    updates["character_limit"] = val
+                except (TypeError, ValueError):
+                    return "Invalid character_limit. Must be a number between 100 and 5000."
+
+            for bool_field in ("include_signature", "auto_adjust_tone", "include_thread_context"):
+                if bool_field in updates and not isinstance(updates[bool_field], bool):
+                    return f"Invalid value for '{bool_field}'. Must be true or false."
+
             set_fields = {f"preferences.{k}": v for k, v in updates.items()}
             db["users"].update_one({"_id": ObjectId(user_id)}, {"$set": set_fields})
             return "Settings updated successfully."
         except Exception as e:
             return f"Failed to update settings: {e}"
 
-    """
-     Language: $language
-    - Tone: $tone
-    - Writing style: $writing_style
-    - Sender name: $sender_name
-    - Organization: $organization_name
-    - Greeting: $preferred_greeting
-    - Signature: $signature (enabled: $include_signature)
-    - Character limit: $character_limit characters
-    - Auto-adjust tone: $auto_adjust_tone
-    
-    """
-    email_settings = load_email_settings()
-
-    formatted_sys_prompt = SYSTEM_PROMPT.substitute(language=email_settings['language'],
-                                               tone=email_settings['tone'],
-                                               writing_style=email_settings['writing_style'],
-                                               sender_name=email_settings['sender_name'],
-                                               organization_name=email_settings['organization_name'],
-                                               preferred_greeting = email_settings['preferred_greeting'],
-                                               signature=email_settings['signature'],
-                                               include_signature=email_settings['include_signature'],
-                                               character_limit = email_settings['character_limit'],
-                                               auto_adjust_tone=email_settings['auto_adjust_tone']
-                                               )
+    formatted_sys_prompt = SYSTEM_PROMPT.substitute(language=prefs['language'],
+                                                    tone=prefs['tone'],
+                                                    writing_style=prefs['writing_style'],
+                                                    sender_name=prefs['sender_name'],
+                                                    organization_name=prefs['organization_name'],
+                                                    preferred_greeting=prefs['preferred_greeting'],
+                                                    signature=prefs['signature'],
+                                                    include_signature=prefs['include_signature'],
+                                                    character_limit=prefs['character_limit'],
+                                                    auto_adjust_tone=prefs['auto_adjust_tone']
+                                                    )
     print(f"sys={formatted_sys_prompt}")
     tools = mcp_tools + [bound_schedule_send_email, update_email_settings]
     return create_agent(
