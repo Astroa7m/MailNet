@@ -9,8 +9,17 @@ export default function Home() {
   const [user, setUser] = useState<{ name: string; email: string; picture: string; providers: string[] } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") === "missing_scopes") {
+      setConnectError("Mail access was not granted. Please allow all permissions when connecting an account.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   useEffect(() => {
     fetch("http://localhost:8002/me", { credentials: "include" })
@@ -100,6 +109,16 @@ export default function Home() {
       </header>
 
       {settingsOpen && <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} providers={user?.providers ?? []} />}
+
+      {connectError && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-red-50 dark:bg-red-950 border-b border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-sm">
+          <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none">
+            <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span>{connectError}</span>
+          <button onClick={() => setConnectError(null)} className="ml-auto text-red-400 hover:text-red-600 dark:hover:text-red-200">&#x2715;</button>
+        </div>
+      )}
 
       {/* Chat */}
       <div className="flex-1 overflow-hidden">

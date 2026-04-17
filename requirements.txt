@@ -1,8 +1,10 @@
 langgraph
 langchain
+langchain-groq
+langchain-mcp-adapters
 langgraph-cli[inmem]
 langgraph-checkpoint-mongodb
-dotenv
+python-dotenv
 fastapi
 apscheduler
 uvicorn

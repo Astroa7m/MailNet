@@ -271,7 +271,8 @@ async def logout(request: Request):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page_direct(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    error = request.query_params.get("error")
+    return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
 @app.get("/me")
@@ -294,7 +295,8 @@ async def login_page(request: Request):
     if request.session.get("user"):
         FRONT_END_URL = "/chat" if is_not_using_copilot_kit else os.getenv("FRONTEND_URL")
         return RedirectResponse(url=FRONT_END_URL)
-    return templates.TemplateResponse("login.html", {"request": request})
+    error = request.query_params.get("error")
+    return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
 # Google
@@ -310,6 +312,13 @@ async def login_google(request: Request):
 @limiter.limit("20/minute")
 async def auth_google(request: Request):
     token = await oauth.google.authorize_access_token(request)
+
+    granted_scopes = set(token.get("scope", "").split())
+    is_connecting = request.session.pop("connecting", False)
+    if "https://mail.google.com/" not in granted_scopes:
+        dest = os.getenv("FRONTEND_URL", "http://localhost:3000") if is_connecting else "/"
+        return RedirectResponse(url=f"{dest}?error=missing_scopes")
+
     user_info = token.get("userinfo")
     email = user_info["email"]
     refresh_token = token.get("refresh_token")
@@ -324,7 +333,7 @@ async def auth_google(request: Request):
         "expiry": datetime.datetime.fromtimestamp(token["expires_at"], datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     }
 
-    if request.session.pop("connecting", False):
+    if is_connecting:
         # linking flow: attach google account to existing user
         if refresh_token:
             db["users"].update_one(
@@ -387,11 +396,18 @@ async def auth_microsoft(request: Request):
             request,
             claims_options={"iss": {"essential": False}}
         )
+
+        granted_scopes = token.get("scope", "")
+        is_connecting = request.session.pop("connecting", False)
+        if "Mail.ReadWrite" not in granted_scopes and "Mail.Send" not in granted_scopes:
+            dest = os.getenv("FRONTEND_URL", "http://localhost:3000") if is_connecting else "/"
+            return RedirectResponse(url=f"{dest}?error=missing_scopes")
+
         user_info = token.get("userinfo")
         email = user_info.get("email") or user_info.get("preferred_username", "")
         refresh_token = token.get("refresh_token")
 
-        if request.session.pop("connecting", False):
+        if is_connecting:
             # linking flow: attach microsoft account to existing user
             set_fields = {"outlook_email": email}
             if refresh_token:
