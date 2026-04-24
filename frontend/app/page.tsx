@@ -1,17 +1,23 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
-import { CopilotChat } from "@copilotkit/react-ui";
-import "@copilotkit/react-ui/styles.css";
+import { useRef, useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useSidebar } from "./components/SidebarContext";
 import SettingsModal from "./components/SettingsModal";
 
+const SUGGESTIONS = [
+  { icon: "✉️", label: "Read my latest emails" },
+  { icon: "✍️", label: "Draft a professional reply" },
+  { icon: "🔍", label: "Search for an email" },
+  { icon: "📅", label: "Schedule an email for tomorrow" },
+];
+
 export default function Home() {
-  const [user, setUser] = useState<{ name: string; email: string; picture: string; providers: string[] } | null>(null);
+  const { user, open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const { open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
+  const router = useRouter();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -19,21 +25,6 @@ export default function Home() {
       setConnectError("Mail access was not granted. Please allow all permissions when connecting an account.");
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, []);
-
-  useEffect(() => {
-    fetch("http://localhost:8002/me", { credentials: "include" })
-      .then((r) => {
-        if (r.status === 401) {
-          window.location.href = "http://localhost:8002/";
-          return null;
-        }
-        return r.json();
-      })
-      .then((data) => {
-        if (data) setUser({ name: data.name || "", email: data.email || "", picture: data.picture || "", providers: data.providers || [] });
-      })
-      .catch(() => { window.location.href = "http://localhost:8002/login"; });
   }, []);
 
   useEffect(() => {
@@ -46,18 +37,24 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  function startConversation(prompt?: string) {
+    const id = crypto.randomUUID();
+    router.push(prompt ? `/${id}?prompt=${encodeURIComponent(prompt)}` : `/${id}`);
+  }
+
+  const firstName = user?.name?.split(" ")[0] ?? "";
+
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
-      {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
         <div className="flex items-center gap-3">
-            {!sidebarOpen && (
-              <button onClick={toggleSidebar} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500" title="Open sidebar">
-                &#9776;
-              </button>
-            )}
-            <span className="font-semibold text-lg">MailNet</span>
-          </div>
+          {!sidebarOpen && (
+            <button onClick={toggleSidebar} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500" title="Open sidebar">
+              &#9776;
+            </button>
+          )}
+          <span className="font-semibold text-lg">MailNet</span>
+        </div>
         {user && (
           <div className="relative" ref={dropdownRef}>
             <button
@@ -95,9 +92,7 @@ export default function Home() {
                   Settings
                 </button>
                 <button
-                  onClick={() => {
-                    window.location.href = "http://localhost:8002/logout";
-                  }}
+                  onClick={() => { window.location.href = "http://localhost:8002/logout"; }}
                   className="block text-sm text-red-500 hover:text-red-600 py-1"
                 >
                   Sign out
@@ -120,13 +115,36 @@ export default function Home() {
         </div>
       )}
 
-      {/* Chat */}
-      <div className="flex-1 overflow-hidden">
-        <CopilotChat
-          className="h-full"
-          labels={{ title: "MailNet Assistant" }}
-        />
-      </div>
+      <main className="flex-1 flex flex-col items-center justify-center px-4 gap-10">
+        <div className="text-center">
+          <h1 className="text-3xl font-semibold text-gray-900 dark:text-white mb-2">
+            {firstName ? `Welcome back, ${firstName}` : "Welcome to MailNet"}
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 text-base">
+            Your AI email assistant. What would you like to do today?
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 w-full max-w-lg">
+          {SUGGESTIONS.map((s) => (
+            <button
+              key={s.label}
+              onClick={() => startConversation(s.label)}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm text-left transition-colors shadow-sm"
+            >
+              <span className="text-xl">{s.icon}</span>
+              <span className="text-gray-700 dark:text-gray-300">{s.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={() => startConversation()}
+          className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors shadow"
+        >
+          <span className="text-lg leading-none">+</span> New conversation
+        </button>
+      </main>
     </div>
   );
 }

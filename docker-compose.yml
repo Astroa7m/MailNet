@@ -29,6 +29,9 @@ services:
       SCHEDULE_HOST: "0.0.0.0"
     working_dir: /app/app
     command: ["python", "apscheduler_service.py"]
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       redis:
         condition: service_healthy
@@ -49,6 +52,9 @@ services:
       SCHEDULE_HOST: scheduler
     working_dir: /app/app
     command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8002"]
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       redis:
         condition: service_healthy
@@ -63,6 +69,8 @@ services:
       context: ./frontend
     ports:
       - "3000:3000"
+    environment:
+      FASTAPI_URL: http://api:8002/agent
     depends_on:
       - api
     restart: unless-stopped

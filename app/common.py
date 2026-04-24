@@ -24,7 +24,7 @@ from langchain_core.messages import ToolMessage
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from app.extra_tools import schedule_send_email
+from app.extra_tools import schedule_send_email, schedule_recurring_email
 
 load_dotenv()
 
@@ -52,8 +52,12 @@ SYSTEM_PROMPT = Template(
     """
     You are MailNet, an AI email assistant. You help users read, compose, send, draft, reply to, search, archive, and schedule emails.
 
-    User preferences, always apply when composing or replying:
-    - Language: $language
+    LANGUAGE RULES: follow these strictly, no exceptions:
+    1. Conversation: always reply to the user in whatever language they write to you in. Never switch conversation language based on any setting.
+    2. Email content (subject, body, greeting, signature): ALWAYS write in $language, even if the user spoke to you in a different language. This rule overrides everything else when composing or replying to emails.
+
+    Email composition preferences, apply only when writing or replying to emails:
+    - Language: $language - MANDATORY for all email content, do not deviate
     - Tone: $tone
     - Writing style: $writing_style
     - Sender name: $sender_name
@@ -63,12 +67,10 @@ SYSTEM_PROMPT = Template(
     - Character limit: $character_limit characters
     - Auto-adjust tone: $auto_adjust_tone
 
-    Rules for updating preferences via update_email_settings:
-    - default_provider must be "google" or "microsoft" (lowercase). Refuse any other value (e.g. yahoo, outlook, gmail).
+    Rules for update_email_settings:
+    - default_provider must be "google" or "microsoft" (lowercase only).
     - character_limit must be a number between 100 and 5000.
     - include_signature, auto_adjust_tone, include_thread_context must be true or false.
-    - Refuse offensive, harmful, or nonsensical values (e.g. tone: "rude", language: "gibberish").
-    - Always normalize default_provider to lowercase before saving.
 
     If information needed to complete a task is missing, ask don't guess. Keep responses concise.
     """
@@ -203,7 +205,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
         {
             "email_mcp": {
                 "transport": "streamable_http",
-                "url": "http://localhost:9111/mcp",
+                "url": os.getenv("MAILNET_SERVER_URL", "http://localhost:9111/mcp"),
                 "headers": {
                     "azure_token": encrypt_payload(azure_token),
                     "google_token": encrypt_payload(google_token),
@@ -221,29 +223,88 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
 
     def bound_schedule_send_email(
             to: str, subject: str, body: str,
-            seconds: Optional[int] = None, minutes: Optional[int] = None,
-            hours: Optional[int] = None, day_of_month: Optional[int] = None,
-            month: Optional[int] = None, year: Optional[int] = None,
-            days_count_from_today: Optional[int] = None, day_string: Optional[str] = None,
             user_id: str = "tester-user-001",
+            minutes_from_now: Optional[int] = None,
+            hours_from_now: Optional[int] = None,
+            days_from_now: Optional[int] = None,
+            day_string: Optional[str] = None,
+            at_hour: Optional[int] = None,
+            at_minute: Optional[int] = None,
+            at_second: Optional[int] = None,
+            at_year: Optional[int] = None,
+            at_month: Optional[int] = None,
+            at_day: Optional[int] = None,
     ):
-        """schedules email to send, if succeeded, you should return the scheduled datetime to the user in human-readable way"""
+        """Schedules a one-time email. Use EXACTLY ONE scheduling method:
+        - Relative: minutes_from_now=25 means 'in 25 minutes'; hours_from_now=2 means 'in 2 hours'; days_from_now=3 means 'in 3 days'.
+        - Specific time today/tomorrow: at_hour=12, at_minute=25 means 'at 12:25'. If that time already passed today it schedules tomorrow.
+        - Named weekday: day_string='Monday' + optional at_hour/at_minute for the time on that day.
+        - Exact date: at_year=2026, at_month=5, at_day=10 + optional at_hour/at_minute.
+        Returns the confirmed scheduled datetime on success."""
         return schedule_send_email(
-            to=to, subject=subject, body=body, seconds=seconds, minutes=minutes,
-            hours=hours, day_of_month=day_of_month, month=month, year=year,
-            days_count_from_today=days_count_from_today, day_string=day_string,
+            to=to, subject=subject, body=body,
+            minutes_from_now=minutes_from_now, hours_from_now=hours_from_now,
+            days_from_now=days_from_now, day_string=day_string,
+            at_year=at_year, at_month=at_month, at_day=at_day,
+            at_hour=at_hour, at_minute=at_minute, at_second=at_second,
             user_id=user_id, timezone=user_tz,
+            google_token=encrypt_payload(google_token) if google_token else None,
+            azure_token=encrypt_payload(azure_token) if azure_token else None,
+            default_provider=prefs.get("default_provider", "google"),
         )
 
-    def update_email_settings(updates_json: str) -> str:
-        """Update the user's email preferences. Pass a JSON string with the fields to change.
-        Available fields: language, tone, writing_style, sender_name, organization_name,
-        include_signature, signature, preferred_greeting, auto_adjust_tone,
-        include_thread_context, character_limit, default_provider."""
+    def bound_schedule_recurring_email(
+            to: str, subject: str, body: str,
+            user_id: str = "tester-user-001",
+            hour: Optional[int] = None,
+            minute: Optional[int] = None,
+            second: Optional[int] = None,
+            day_of_week: Optional[str] = None,
+            day: Optional[int] = None,
+            month: Optional[int] = None,
+    ):
+        """Schedules a recurring email using cron syntax. All time values are interpreted in the user's local timezone. day_of_week accepts: 'mon', 'tue', 'mon-fri', '1,3,5' (0=Monday). Returns a success or failure message."""
+        return schedule_recurring_email(
+            to=to, subject=subject, body=body, user_id=user_id,
+            timezone=user_tz,
+            hour=hour, minute=minute, second=second,
+            day_of_week=day_of_week, day=day, month=month,
+            google_token=encrypt_payload(google_token) if google_token else None,
+            azure_token=encrypt_payload(azure_token) if azure_token else None,
+            default_provider=prefs.get("default_provider", "google"),
+        )
+
+    def update_email_settings(
+            language: Optional[str] = None,
+            tone: Optional[str] = None,
+            writing_style: Optional[str] = None,
+            sender_name: Optional[str] = None,
+            organization_name: Optional[str] = None,
+            include_signature: Optional[bool] = None,
+            signature: Optional[str] = None,
+            preferred_greeting: Optional[str] = None,
+            auto_adjust_tone: Optional[bool] = None,
+            include_thread_context: Optional[bool] = None,
+            character_limit: Optional[int] = None,
+            default_provider: Optional[str] = None,
+    ) -> str:
+        """Update the user's email preferences. Only pass the fields you want to change, leave others as None.
+        default_provider must be 'google' or 'microsoft'.
+        character_limit must be between 100 and 5000."""
         if not user_id:
             return "Cannot update settings: no user context."
         try:
-            updates = json.loads(updates_json)
+            updates = {k: v for k, v in {
+                "language": language, "tone": tone, "writing_style": writing_style,
+                "sender_name": sender_name, "organization_name": organization_name,
+                "include_signature": include_signature, "signature": signature,
+                "preferred_greeting": preferred_greeting, "auto_adjust_tone": auto_adjust_tone,
+                "include_thread_context": include_thread_context, "character_limit": character_limit,
+                "default_provider": default_provider,
+            }.items() if v is not None}
+
+            if not updates:
+                return "No fields provided to update."
 
             if "default_provider" in updates:
                 val = str(updates["default_provider"]).lower()
@@ -282,7 +343,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
                                                     auto_adjust_tone=prefs['auto_adjust_tone']
                                                     )
     print(f"sys={formatted_sys_prompt}")
-    tools = mcp_tools + [bound_schedule_send_email, update_email_settings]
+    tools = mcp_tools + [bound_schedule_send_email, bound_schedule_recurring_email, update_email_settings]
     return create_agent(
         llm,
         tools,

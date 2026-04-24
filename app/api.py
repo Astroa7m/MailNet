@@ -7,7 +7,7 @@ from pathlib import Path
 from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from copilotkit import LangGraphAGUIAgent
-import redis
+import redis.asyncio as redis
 import uvicorn
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
@@ -41,6 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# starlette_session returns None for missing sessions instead of {}; normalise it here
+@app.middleware("http")
+async def ensure_session(request: Request, call_next):
+    if request.scope.get("session") is None:
+        request.scope["session"] = {}
+    return await call_next(request)
 limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -107,7 +114,7 @@ app.add_middleware(
     secret_key=os.getenv("SESSION_SECRET"),
     https_only=os.getenv("ENVIRONMENT") == "production",
     cookie_name="session",
-    backend_type=BackendType.redis,
+    backend_type=BackendType.aioRedis,
     backend_client=redis_client,
     same_site="lax",
     max_age=86400  # 1 day
@@ -250,9 +257,13 @@ else:
         graph = await build_agent(azure_token, google_token, user_tz, user_id=user["id"])
         agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
 
+        filtered_input = input_data.model_copy(
+            update={"messages": [m for m in input_data.messages if m.role != "reasoning"]}
+        )
+
         encoder = EventEncoder(accept=request.headers.get("accept"))
         return StreamingResponse(
-            (encoder.encode(e) async for e in agent.run(input_data)),  # type: ignore
+            (encoder.encode(e) async for e in agent.run(filtered_input)),  # type: ignore
             media_type=encoder.get_content_type()
         )
 
@@ -260,6 +271,14 @@ else:
     @app.get("/agent/health")
     def agent_health():
         return {"status": "ok", "agent": {"name": "Mailing Agent"}}
+
+
+@app.post("/tz")
+async def set_timezone(request: Request):
+    data = await request.json()
+    tz = data.get("tz", "UTC")
+    request.session["tz"] = tz
+    return {"tz": tz}
 
 
 @app.get("/logout")

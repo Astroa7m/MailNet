@@ -210,6 +210,7 @@ export default function SettingsModal({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+  const [isDark, setIsDark] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
 
   const hasGoogle = providers.includes("google");
@@ -219,6 +220,7 @@ export default function SettingsModal({
 
   useEffect(() => {
     if (!open) return;
+    setIsDark(document.documentElement.classList.contains("dark"));
     setStatus("idle");
     setLoading(true);
     Promise.all([
@@ -235,6 +237,17 @@ export default function SettingsModal({
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [open]);
+
+  function toggleTheme(dark: boolean) {
+    setIsDark(dark);
+    if (dark) {
+      document.documentElement.classList.add("dark");
+      localStorage.setItem("mailnet-theme", "dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+      localStorage.setItem("mailnet-theme", "light");
+    }
+  }
 
   async function handleSave() {
     const changes: Partial<Preferences> = {};
@@ -298,6 +311,14 @@ export default function SettingsModal({
             </div>
           ) : (
             <div className="space-y-6">
+
+              {/* Appearance */}
+              <div>
+                <SectionHeader title="Appearance" />
+                <Field label="Dark Mode" fieldKey="theme">
+                  <Toggle checked={isDark} onChange={toggleTheme} />
+                </Field>
+              </div>
 
               {/* Writing */}
               <div>
