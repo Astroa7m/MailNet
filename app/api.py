@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import os
 import sys
@@ -23,8 +24,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette_session import SessionMiddleware, BackendType
 
 from bson import ObjectId
+from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
-    build_agent, get_or_create_user, db
+    build_agent, get_or_create_user, db, mongo_client
 
 load_dotenv()
 
@@ -539,6 +542,34 @@ async def delete_thread(thread_id: str, request: Request):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Thread not found")
     return {"ok": True}
+
+
+@app.get("/threads/{thread_id}/messages")
+async def get_thread_messages(thread_id: str, request: Request):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if not db["threads"].find_one({"thread_id": thread_id, "user_id": user["id"]}):
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    try:
+        checkpointer = MongoDBSaver(mongo_client, db_name="MailNet")
+        config = {"configurable": {"thread_id": thread_id}}
+        checkpoint_tuple = await asyncio.to_thread(checkpointer.get_tuple, config)
+        if not checkpoint_tuple:
+            return []
+
+        messages = checkpoint_tuple.checkpoint.get("channel_values", {}).get("messages", [])
+        result = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                result.append({"id": str(msg.id), "role": "user", "content": str(msg.content)})
+            elif isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
+                result.append({"id": str(msg.id), "role": "assistant", "content": str(msg.content)})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load messages: {str(e)}")
 
 
 if __name__ == "__main__":

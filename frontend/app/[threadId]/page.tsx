@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { CopilotKit } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
@@ -7,6 +7,67 @@ import "@copilotkit/react-ui/styles.css";
 import { useSidebar } from "../components/SidebarContext";
 import ToolActions from "../components/ToolActions";
 import SettingsModal from "../components/SettingsModal";
+
+interface HistoryMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+}
+
+const HistoryContext = createContext<HistoryMessage[]>([]);
+
+function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMessage, UserMessage, ImageRenderer, onRegenerate, onCopy }: any) {
+  const history = useContext(HistoryContext);
+
+  // IDs already covered by the pre-fetched history
+  const historyIds = new Set(history.map((h) => h.id));
+
+  // Only show CopilotKit messages that are NOT already in history (the new ones)
+  const newMessages = messages.filter((m: any) => !historyIds.has(m.id));
+
+  // Correct message shape for RenderMessage: { id, role, content } — no extra type field
+  const historyMsgs = history.map((h) => ({ id: h.id, role: h.role, content: h.content }));
+
+  return (
+    <div className="copilotKitMessages">
+      <div className="copilotKitMessagesContainer">
+        {/* Pre-fetched history always at top */}
+        {historyMsgs.map((msg, i) => (
+          <RenderMessage
+            key={msg.id}
+            message={msg}
+            messages={historyMsgs}
+            inProgress={false}
+            index={i}
+            isCurrentMessage={false}
+            AssistantMessage={AssistantMessage}
+            UserMessage={UserMessage}
+            ImageRenderer={ImageRenderer}
+            onRegenerate={undefined}
+            onCopy={onCopy}
+          />
+        ))}
+        {/* New messages from this session below history */}
+        {newMessages.map((msg: any, i: number) => (
+          <RenderMessage
+            key={msg.id ?? i}
+            message={msg}
+            messages={messages}
+            inProgress={inProgress}
+            index={historyMsgs.length + i}
+            isCurrentMessage={i === newMessages.length - 1}
+            AssistantMessage={AssistantMessage}
+            UserMessage={UserMessage}
+            ImageRenderer={ImageRenderer}
+            onRegenerate={onRegenerate}
+            onCopy={onCopy}
+          />
+        ))}
+      </div>
+      <div className="copilotKitMessagesFooter" />
+    </div>
+  );
+}
 
 function AutoSend() {
   const sent = useRef(false);
@@ -45,7 +106,17 @@ export default function ThreadPage() {
   const { user, open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [history, setHistory] = useState<HistoryMessage[]>([]);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setHistory([]);
+    fetch(`http://localhost:8002/threads/${threadId}/messages`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : [])
+      .then(setHistory)
+      .catch(() => {});
+  }, [threadId]);
+
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -57,6 +128,7 @@ export default function ThreadPage() {
   }, []);
 
   return (
+    <HistoryContext.Provider value={history}>
     <CopilotKit runtimeUrl="/api/copilotkit" agent="mailing_net_agent" threadId={threadId}>
       <ToolActions />
       <AutoSend />
@@ -124,9 +196,11 @@ export default function ThreadPage() {
           <CopilotChat
             className="h-full"
             labels={{ title: "MailNet Assistant" }}
+            Messages={MessagesWithHistory}
           />
         </div>
       </div>
     </CopilotKit>
+    </HistoryContext.Provider>
   );
 }
