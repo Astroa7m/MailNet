@@ -561,17 +561,34 @@ async def get_thread_messages(thread_id: str, request: Request):
             return []
 
         messages = checkpoint_tuple.checkpoint.get("channel_values", {}).get("messages", [])
+
+        # Pre-index tool results by tool_call_id
+        tool_results: dict[str, str] = {}
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                tool_results[msg.tool_call_id] = str(msg.content)[:500]
+
         result = []
         for msg in messages:
             if isinstance(msg, HumanMessage):
                 result.append({"id": str(msg.id), "role": "user", "content": str(msg.content)})
             elif isinstance(msg, AIMessage) and msg.tool_calls:
-                # Include ID only so frontend can suppress it from CopilotKit's snapshot
-                result.append({"id": str(msg.id), "role": "tool_call", "content": ""})
+                # Suppress the AIMessage itself
+                result.append({"id": str(msg.id), "role": "_suppress", "content": ""})
+                # One renderable entry per tool call (id = tool_call_id, used by CopilotKit)
+                for tc in msg.tool_calls:
+                    result.append({
+                        "id": tc["id"],
+                        "role": "tool_call",
+                        "content": tc["name"],
+                        "args": tc.get("args", {}),
+                        "result": tool_results.get(tc["id"], ""),
+                    })
             elif isinstance(msg, AIMessage) and msg.content:
                 result.append({"id": str(msg.id), "role": "assistant", "content": str(msg.content)})
             elif isinstance(msg, ToolMessage):
-                result.append({"id": str(msg.id), "role": "tool_result", "content": ""})
+                # Suppress ToolMessage — result is already embedded in the tool_call entry
+                result.append({"id": str(msg.id), "role": "_suppress", "content": ""})
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load messages: {str(e)}")

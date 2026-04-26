@@ -46,3 +46,7 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+details[open] .details-chevron {
+  transform: rotate(180deg);
+}

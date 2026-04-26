@@ -6,12 +6,15 @@ import { CopilotChat } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import { useSidebar } from "../components/SidebarContext";
 import ToolActions from "../components/ToolActions";
+import ToolCard from "../components/ToolCard";
 import SettingsModal from "../components/SettingsModal";
 
 interface HistoryMessage {
   id: string;
-  role: "user" | "assistant" | "tool_call" | "tool_result";
+  role: "user" | "assistant" | "tool_call" | "_suppress";
   content: string;
+  args?: Record<string, unknown>;
+  result?: string;
 }
 
 const HistoryContext = createContext<HistoryMessage[]>([]);
@@ -25,29 +28,40 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
   // Only show CopilotKit messages that are NOT already in history (the new ones)
   const newMessages = messages.filter((m: any) => !historyIds.has(m.id));
 
-  // Only render user/assistant messages from history
-  const historyMsgs = history.filter((h) => h.role === "user" || h.role === "assistant")
+  // Renderable history: user + assistant go through RenderMessage; tool_call rendered inline
+  const renderableHistory = history.filter((h) => h.role !== "_suppress");
+  const ckHistory = renderableHistory
+    .filter((h) => h.role === "user" || h.role === "assistant")
     .map((h) => ({ id: h.id, role: h.role, content: h.content }));
 
   return (
     <div className="copilotKitMessages">
       <div className="copilotKitMessagesContainer">
-        {/* Pre-fetched history always at top */}
-        {historyMsgs.map((msg, i) => (
-          <RenderMessage
-            key={msg.id}
-            message={msg}
-            messages={historyMsgs}
-            inProgress={false}
-            index={i}
-            isCurrentMessage={false}
-            AssistantMessage={AssistantMessage}
-            UserMessage={UserMessage}
-            ImageRenderer={ImageRenderer}
-            onRegenerate={undefined}
-            onCopy={onCopy}
-          />
-        ))}
+        {renderableHistory.map((msg, i) => {
+          if (msg.role === "tool_call") {
+            return (
+              <div key={msg.id} className="px-4 py-1">
+                <ToolCard name={msg.content} status="complete" args={msg.args} result={msg.result} />
+              </div>
+            );
+          }
+          const ckMsg = { id: msg.id, role: msg.role, content: msg.content };
+          return (
+            <RenderMessage
+              key={msg.id}
+              message={ckMsg}
+              messages={ckHistory}
+              inProgress={false}
+              index={i}
+              isCurrentMessage={false}
+              AssistantMessage={AssistantMessage}
+              UserMessage={UserMessage}
+              ImageRenderer={ImageRenderer}
+              onRegenerate={undefined}
+              onCopy={onCopy}
+            />
+          );
+        })}
         {/* New messages from this session below history */}
         {newMessages.map((msg: any, i: number) => (
           <RenderMessage
@@ -55,7 +69,7 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
             message={msg}
             messages={messages}
             inProgress={inProgress}
-            index={historyMsgs.length + i}
+            index={renderableHistory.length + i}
             isCurrentMessage={i === newMessages.length - 1}
             AssistantMessage={AssistantMessage}
             UserMessage={UserMessage}
