@@ -24,7 +24,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette_session import SessionMiddleware, BackendType
 
 from bson import ObjectId
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
     build_agent, get_or_create_user, db, mongo_client
@@ -565,8 +565,13 @@ async def get_thread_messages(thread_id: str, request: Request):
         for msg in messages:
             if isinstance(msg, HumanMessage):
                 result.append({"id": str(msg.id), "role": "user", "content": str(msg.content)})
-            elif isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
+            elif isinstance(msg, AIMessage) and msg.tool_calls:
+                # Include ID only so frontend can suppress it from CopilotKit's snapshot
+                result.append({"id": str(msg.id), "role": "tool_call", "content": ""})
+            elif isinstance(msg, AIMessage) and msg.content:
                 result.append({"id": str(msg.id), "role": "assistant", "content": str(msg.content)})
+            elif isinstance(msg, ToolMessage):
+                result.append({"id": str(msg.id), "role": "tool_result", "content": ""})
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load messages: {str(e)}")

@@ -10,7 +10,7 @@ import SettingsModal from "../components/SettingsModal";
 
 interface HistoryMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool_call" | "tool_result";
   content: string;
 }
 
@@ -19,14 +19,15 @@ const HistoryContext = createContext<HistoryMessage[]>([]);
 function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMessage, UserMessage, ImageRenderer, onRegenerate, onCopy }: any) {
   const history = useContext(HistoryContext);
 
-  // IDs already covered by the pre-fetched history
+  // All IDs from pre-fetched history (including tool_call/tool_result) — used only for dedup
   const historyIds = new Set(history.map((h) => h.id));
 
   // Only show CopilotKit messages that are NOT already in history (the new ones)
   const newMessages = messages.filter((m: any) => !historyIds.has(m.id));
 
-  // Correct message shape for RenderMessage: { id, role, content } — no extra type field
-  const historyMsgs = history.map((h) => ({ id: h.id, role: h.role, content: h.content }));
+  // Only render user/assistant messages from history
+  const historyMsgs = history.filter((h) => h.role === "user" || h.role === "assistant")
+    .map((h) => ({ id: h.id, role: h.role, content: h.content }));
 
   return (
     <div className="copilotKitMessages">

@@ -5,11 +5,33 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  color-scheme: light;
+
+  /* CopilotKit light mode */
+  --copilot-kit-primary-color: #3b82f6;
+  --copilot-kit-contrast-color: #ffffff;
+  --copilot-kit-background-color: #ffffff;
+  --copilot-kit-secondary-color: #f9fafb;
+  --copilot-kit-secondary-contrast-color: #111827;
+  --copilot-kit-separator-color: #e5e7eb;
+  --copilot-kit-response-button-background-color: #f3f4f6;
+  --copilot-kit-response-button-color: #374151;
 }
 
 .dark {
   --background: #0a0a0a;
   --foreground: #ededed;
+  color-scheme: dark;
+
+  /* CopilotKit dark mode */
+  --copilot-kit-primary-color: #3b82f6;
+  --copilot-kit-contrast-color: #ffffff;
+  --copilot-kit-background-color: #0a0a0a;
+  --copilot-kit-secondary-color: #1f2937;
+  --copilot-kit-secondary-contrast-color: #f9fafb;
+  --copilot-kit-separator-color: #374151;
+  --copilot-kit-response-button-background-color: #1f2937;
+  --copilot-kit-response-button-color: #f9fafb;
 }
 
 @theme inline {
