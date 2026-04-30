@@ -4,10 +4,20 @@ import { useParams } from "next/navigation";
 import { CopilotKit } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
+import { Markdown } from "@copilotkit/react-ui";
 import { useSidebar } from "../components/SidebarContext";
 import ToolActions from "../components/ToolActions";
 import ToolCard from "../components/ToolCard";
 import SettingsModal from "../components/SettingsModal";
+
+function CustomAssistantMessage(props: any) {
+  const content: string = props.message?.content ?? props.content ?? "";
+  return (
+    <div className="ck-markdown">
+      <Markdown content={content} />
+    </div>
+  );
+}
 
 interface HistoryMessage {
   id: string;
@@ -54,7 +64,7 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
               inProgress={false}
               index={i}
               isCurrentMessage={false}
-              AssistantMessage={AssistantMessage}
+              AssistantMessage={CustomAssistantMessage}
               UserMessage={UserMessage}
               ImageRenderer={ImageRenderer}
               onRegenerate={undefined}

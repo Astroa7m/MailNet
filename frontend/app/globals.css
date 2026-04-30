@@ -50,3 +50,48 @@ body {
 details[open] .details-chevron {
   transform: rotate(180deg);
 }
+
+/* Markdown rendering inside assistant messages */
+.ck-markdown { line-height: 1.65; }
+.ck-markdown p { margin: 0.5em 0; }
+.ck-markdown p:first-child { margin-top: 0; }
+.ck-markdown p:last-child { margin-bottom: 0; }
+.ck-markdown h1, .ck-markdown h2, .ck-markdown h3 {
+  font-weight: 600;
+  margin: 0.9em 0 0.4em;
+  line-height: 1.3;
+}
+.ck-markdown h1 { font-size: 1.2em; }
+.ck-markdown h2 { font-size: 1.1em; }
+.ck-markdown h3 { font-size: 1em; }
+.ck-markdown ul, .ck-markdown ol { margin: 0.5em 0; padding-left: 1.4em; }
+.ck-markdown li { margin: 0.2em 0; }
+.ck-markdown strong { font-weight: 600; }
+.ck-markdown em { font-style: italic; }
+.ck-markdown code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.07);
+}
+.dark .ck-markdown code { background: rgba(255,255,255,0.1); }
+.ck-markdown pre {
+  margin: 0.6em 0;
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.06);
+  overflow-x: auto;
+}
+.dark .ck-markdown pre { background: rgba(255,255,255,0.07); }
+.ck-markdown pre code { background: none; padding: 0; }
+.ck-markdown blockquote {
+  border-left: 3px solid #d1d5db;
+  padding-left: 0.75em;
+  color: #6b7280;
+  margin: 0.5em 0;
+}
+.dark .ck-markdown blockquote { border-color: #4b5563; color: #9ca3af; }
+.ck-markdown a { color: #3b82f6; text-decoration: underline; }
+.ck-markdown hr { border: none; border-top: 1px solid #e5e7eb; margin: 0.75em 0; }
+.dark .ck-markdown hr { border-color: #374151; }
