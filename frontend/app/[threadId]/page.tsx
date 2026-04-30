@@ -157,58 +157,76 @@ export default function ThreadPage() {
     <CopilotKit runtimeUrl="/api/copilotkit" agent="mailing_net_agent" threadId={threadId}>
       <ToolActions />
       <AutoSend />
-      <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
-        <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
-          <div className="flex items-center gap-3">
+      <div className="flex flex-col h-screen bg-white dark:bg-[#0f0f0f]">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-[#1e1e1e] shrink-0">
+          <div className="flex items-center gap-2.5">
             {!sidebarOpen && (
-              <button onClick={toggleSidebar} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500" title="Open sidebar">
-                &#9776;
-              </button>
+              <>
+                <button
+                  onClick={toggleSidebar}
+                  className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-[#1e1e1e] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                </button>
+                <div className="w-6 h-6 rounded-md bg-blue-600 flex items-center justify-center">
+                  <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </div>
+              </>
             )}
-            <span className="font-semibold text-lg">MailNet</span>
           </div>
           {user && (
             <div className="relative" ref={dropdownRef}>
               <button
                 onClick={() => setDropdownOpen((o) => !o)}
-                className="flex items-center gap-2 rounded-full focus:outline-none"
+                className="rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#0f0f0f]"
               >
                 {user.picture ? (
                   <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">
+                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold">
                     {user.name.charAt(0).toUpperCase()}
                   </div>
                 )}
               </button>
               {dropdownOpen && (
-                <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 p-4">
-                  <div className="flex items-center gap-3 mb-3">
+                <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2a2a2a] rounded-xl shadow-lg z-50 overflow-hidden">
+                  <div className="flex items-center gap-3 p-4 border-b border-gray-100 dark:border-[#2a2a2a]">
                     {user.picture ? (
-                      <img src={user.picture} alt={user.name} className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
+                      <img src={user.picture} alt={user.name} className="w-9 h-9 rounded-full" referrerPolicy="no-referrer" />
                     ) : (
-                      <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
+                      <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-semibold text-sm">
                         {user.name.charAt(0).toUpperCase()}
                       </div>
                     )}
-                    <div>
-                      <p className="font-medium text-sm">{user.name}</p>
-                      <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm text-gray-900 dark:text-white truncate">{user.name}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user.email}</p>
                     </div>
                   </div>
-                  <hr className="border-gray-200 dark:border-gray-700 mb-2" />
-                  <button
-                    onClick={() => { setSettingsOpen(true); setDropdownOpen(false); }}
-                    className="block w-full text-left text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white py-1 transition-colors"
-                  >
-                    Settings
-                  </button>
-                  <button
-                    onClick={() => { window.location.href = "http://localhost:8002/logout"; }}
-                    className="block text-sm text-red-500 hover:text-red-600 py-1"
-                  >
-                    Sign out
-                  </button>
+                  <div className="p-1.5">
+                    <button
+                      onClick={() => { setSettingsOpen(true); setDropdownOpen(false); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#252525] transition-colors"
+                    >
+                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                      Settings
+                    </button>
+                    <button
+                      onClick={() => { window.location.href = "http://localhost:8002/logout"; }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                      Sign out
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
