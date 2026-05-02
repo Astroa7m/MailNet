@@ -32,7 +32,8 @@ client = MultiServerMCPClient(
                 "AZURE_PREFERRED_TOKEN_FILE_PATH": str(path / "azure_token.json"),
 
                 "GOOGLE_CREDENTIALS_FILE_PATH": str(path / "google_credentials.json"),
-                "GOOGLE_PREFERRED_TOKEN_FILE_PATH": str(path / "google_token.json")
+                "GOOGLE_PREFERRED_TOKEN_FILE_PATH": str(path / "google_token.json"),
+                "API_SERVER_URL": os.getenv("API_SERVER_URL", "http://localhost:8002"),
             },
             "transport": "stdio",
         }

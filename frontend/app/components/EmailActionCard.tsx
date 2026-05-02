@@ -1,10 +1,17 @@
 "use client";
 
+interface AttachmentArg {
+  filename: string;
+  mime_type?: string;
+  size?: number;
+}
+
 interface SendArgs {
   to?: string;
   subject?: string;
   body?: string;
   msg_id?: string;
+  attachments?: AttachmentArg[];
 }
 
 interface Props {
@@ -77,6 +84,18 @@ export default function EmailActionCard({ args, status, result, label, icon }: P
             <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words font-sans leading-relaxed max-h-48 overflow-y-auto">
               {args.body}
             </pre>
+          </div>
+        )}
+        {args.attachments && args.attachments.length > 0 && (
+          <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-700/60">
+            <p className="text-xs font-medium text-gray-400 dark:text-gray-500 mb-2">Attachments</p>
+            <div className="flex flex-wrap gap-1.5">
+              {args.attachments.map((att, i) => (
+                <span key={i} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 dark:bg-gray-700 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600">
+                  📎 <span className="max-w-[140px] truncate">{att.filename}</span>
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>

@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import datetime
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -13,9 +15,9 @@ import uvicorn
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -260,13 +262,75 @@ else:
         graph = await build_agent(azure_token, google_token, user_tz, user_id=user["id"])
         agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
 
+        def _flatten_content(content) -> str:
+            """Flatten multimodal content list to a plain string (Groq only accepts strings)."""
+            if isinstance(content, str):
+                return content
+            if not isinstance(content, list):
+                return str(content)
+            text_parts = []
+            file_parts = []
+            for part in content:
+                t = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+                if t == "text":
+                    text = part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
+                    text_parts.append(text or "")
+                elif t in ("image", "image_url", "file", "url"):
+                    if isinstance(part, dict):
+                        source = part.get("source") or {}
+                        val = (source.get("value") if isinstance(source, dict) else getattr(source, "value", "")) \
+                              or (part.get("image_url") or {}).get("url") or part.get("url") or part.get("value", "")
+                        fname = (part.get("metadata") or {}).get("filename", "")
+                    else:
+                        source = getattr(part, "source", None)
+                        val = getattr(source, "value", "") if source else ""
+                        fname = (getattr(part, "metadata", None) or {}).get("filename", "")
+                    # Strip the attachment-raw URL prefix — keep only the file_id UUID
+                    if "/attachment-raw/" in val:
+                        val = val.split("/attachment-raw/")[-1]
+                    label = f" ({fname})" if fname else ""
+                    file_parts.append(f"[Attached file ID: {val}{label}]")
+            result = " ".join(text_parts)
+            if file_parts:
+                result += "\n\n" + "\n".join(file_parts)
+            return result.strip()
+
+        def _normalize_msg(m):
+            if isinstance(m.content, (list, tuple)):
+                return m.model_copy(update={"content": _flatten_content(m.content)})
+            return m
+
         filtered_input = input_data.model_copy(
-            update={"messages": [m for m in input_data.messages if m.role != "reasoning"]}
+            update={"messages": [_normalize_msg(m) for m in input_data.messages if m.role != "reasoning"]}
         )
+
+        async def _safe_run():
+            try:
+                async for e in agent.run(filtered_input):
+                    yield encoder.encode(e)
+            except Exception as exc:
+                msg = str(exc)
+                if "not in request.tools" in msg or "tool call validation" in msg.lower():
+                    # Old conversation history references a removed tool — surface a clean error
+                    from ag_ui.core import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, RunFinishedEvent
+                    import time as _time
+                    ts = int(_time.time() * 1000)
+                    run_id = str(uuid.uuid4())
+                    msg_id = str(uuid.uuid4())
+                    for ev in [
+                        RunStartedEvent(type="RUN_STARTED", run_id=run_id, thread_id=filtered_input.thread_id or ""),
+                        TextMessageStartEvent(type="TEXT_MESSAGE_START", message_id=msg_id, role="assistant"),
+                        TextMessageContentEvent(type="TEXT_MESSAGE_CONTENT", message_id=msg_id, delta="This conversation contains history from an older version of the assistant that is no longer compatible. Please start a new conversation."),
+                        TextMessageEndEvent(type="TEXT_MESSAGE_END", message_id=msg_id),
+                        RunFinishedEvent(type="RUN_FINISHED", run_id=run_id, thread_id=filtered_input.thread_id or ""),
+                    ]:
+                        yield encoder.encode(ev)
+                else:
+                    raise
 
         encoder = EventEncoder(accept=request.headers.get("accept"))
         return StreamingResponse(
-            (encoder.encode(e) async for e in agent.run(filtered_input)),  # type: ignore
+            _safe_run(),  # type: ignore
             media_type=encoder.get_content_type()
         )
 
@@ -592,6 +656,64 @@ async def get_thread_messages(thread_id: str, request: Request):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load messages: {str(e)}")
+
+
+# ── Attachment temp store ─────────────────────────────────────────────────────
+_attachment_store: dict[str, dict] = {}
+_ATTACHMENT_TTL = 3600  # 1 hour
+
+
+def _purge_old_attachments():
+    cutoff = time.time() - _ATTACHMENT_TTL
+    stale = [k for k, v in _attachment_store.items() if v["uploaded_at"] < cutoff]
+    for k in stale:
+        del _attachment_store[k]
+
+
+@app.post("/upload-attachment")
+async def upload_attachment(request: Request, file: UploadFile = File(...)):
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    content = await file.read()
+    if len(content) > 4 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 4 MB limit")
+
+    _purge_old_attachments()
+    file_id = str(uuid.uuid4())
+    _attachment_store[file_id] = {
+        "filename": file.filename or "attachment",
+        "mimeType": file.content_type or "application/octet-stream",
+        "data": base64.b64encode(content).decode(),
+        "size": len(content),
+        "uploaded_at": time.time(),
+        "user_id": user["id"],
+    }
+    return {
+        "file_id": file_id,
+        "filename": file.filename,
+        "mimeType": file.content_type,
+        "size": len(content),
+    }
+
+
+@app.get("/attachment/{file_id}")
+async def get_attachment(file_id: str):
+    att = _attachment_store.get(file_id)
+    if not att:
+        raise HTTPException(status_code=404, detail="Attachment not found or expired")
+    return {"filename": att["filename"], "mimeType": att["mimeType"], "data": att["data"]}
+
+
+@app.get("/attachment-raw/{file_id}")
+async def get_attachment_raw(file_id: str):
+    """Returns the raw file bytes — used by CopilotKit for image previews."""
+    att = _attachment_store.get(file_id)
+    if not att:
+        raise HTTPException(status_code=404, detail="Attachment not found or expired")
+    raw = base64.b64decode(att["data"])
+    return Response(content=raw, media_type=att["mimeType"])
 
 
 if __name__ == "__main__":

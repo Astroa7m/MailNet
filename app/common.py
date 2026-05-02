@@ -72,6 +72,8 @@ SYSTEM_PROMPT = Template(
     - character_limit must be a number between 100 and 5000.
     - include_signature, auto_adjust_tone, include_thread_context must be true or false.
 
+    ATTACHMENT RULE: If the user's message contains "[Attached file ID: <id>]", always pass that ID in attachment_ids when calling send_email, draft_email, or reply_to_email. Never omit it.
+
     If information needed to complete a task is missing, ask don't guess. Keep responses concise.
     """
 )
@@ -218,8 +220,9 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
 
     mcp_tools = [
         t for t in await mcp_client.get_tools()
-        if t.name not in ("load_email_settings", "update_email_settings")
+        if t.name != "update_email_settings"
     ]
+
 
     def bound_schedule_send_email(
             to: str, subject: str, body: str,

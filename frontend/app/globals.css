@@ -51,6 +51,18 @@ body {
 /* Hide the CopilotKit header title — we use our own */
 .copilotKitHeader { display: none !important; }
 
+/* Attachment image previews — fixed thumbnail size */
+.copilotKitInput img,
+.copilotKitAttachment img,
+[class*="attachment"] img,
+[class*="Attachment"] img {
+  width: 48px !important;
+  height: 48px !important;
+  object-fit: cover !important;
+  border-radius: 6px !important;
+  display: block !important;
+}
+
 /* Input area */
 .copilotKitInput {
   border-top: 1px solid var(--copilot-kit-separator-color) !important;
@@ -65,6 +77,8 @@ body {
   font-family: inherit !important;
   font-size: 0.875rem !important;
   padding: 10px 14px !important;
+  overflow-y: hidden !important;           /* fix: no scrollbar when empty */
+  resize: none !important;
   transition: border-color 0.15s;
 }
 .copilotKitInput textarea:focus {
@@ -109,12 +123,26 @@ body {
   border: 1px solid var(--copilot-kit-separator-color) !important;
 }
 
-/* Messages container spacing */
+/* Messages container spacing — horizontal padding keeps bubbles away from sidebar edge */
 .copilotKitMessagesContainer {
-  padding: 16px 0 !important;
+  padding: 16px 24px !important;
   display: flex !important;
   flex-direction: column !important;
   gap: 4px !important;
+}
+
+/* Fix: prevent message row from letting icon overlap the bubble */
+.copilotKitMessage {
+  align-items: flex-start !important;
+  gap: 10px !important;
+}
+
+/* Keep avatars/icons from squishing */
+.copilotKitMessageAvatar,
+.copilotKitAssistantAvatar,
+.copilotKitUserAvatar {
+  flex-shrink: 0 !important;
+  margin-top: 2px !important;
 }
 
 details[open] .details-chevron {

@@ -29,16 +29,26 @@ interface HistoryMessage {
 
 const HistoryContext = createContext<HistoryMessage[]>([]);
 
+async function uploadAttachment(file: File): Promise<{ type: "url"; value: string; mimeType: string }> {
+  if (file.size > 25 * 1024 * 1024) throw new Error(`"${file.name}" exceeds the 25 MB limit.`);
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("http://localhost:8002/upload-attachment", {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+  const data = await res.json();
+  // Return a real URL so CopilotKit can show an image preview; backend strips it to just the file_id
+  return { type: "url", value: `http://localhost:8002/attachment-raw/${data.file_id}`, mimeType: file.type || "application/octet-stream" };
+}
+
 function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMessage, UserMessage, ImageRenderer, onRegenerate, onCopy }: any) {
   const history = useContext(HistoryContext);
 
-  // All IDs from pre-fetched history (including tool_call/tool_result) — used only for dedup
   const historyIds = new Set(history.map((h) => h.id));
-
-  // Only show CopilotKit messages that are NOT already in history (the new ones)
   const newMessages = messages.filter((m: any) => !historyIds.has(m.id));
-
-  // Renderable history: user + assistant go through RenderMessage; tool_call rendered inline
   const renderableHistory = history.filter((h) => h.role !== "_suppress");
   const ckHistory = renderableHistory
     .filter((h) => h.role === "user" || h.role === "assistant")
@@ -72,7 +82,6 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
             />
           );
         })}
-        {/* New messages from this session below history */}
         {newMessages.map((msg: any, i: number) => (
           <RenderMessage
             key={msg.id ?? i}
@@ -89,7 +98,6 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
           />
         ))}
       </div>
-      <div className="copilotKitMessagesFooter" />
     </div>
   );
 }
@@ -110,11 +118,9 @@ function AutoSend() {
         if (retries > 0) setTimeout(() => fill(retries - 1), 100);
         return;
       }
-      // Set value through React's internal setter so onChange fires
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
       setter?.call(textarea, prompt);
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
-      // Give React a tick to update state, then submit
       setTimeout(() => {
         textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       }, 50);
@@ -240,6 +246,10 @@ export default function ThreadPage() {
             className="h-full"
             labels={{ title: "MailNet Assistant" }}
             Messages={MessagesWithHistory}
+            attachments={{
+              enabled: true,
+              onUpload: uploadAttachment,
+            }}
           />
         </div>
       </div>

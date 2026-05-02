@@ -2,12 +2,25 @@
 
 interface Email {
   messageId?: string;
+  id?: string;
   subject?: string;
   sender?: string;
   body?: string;
   dateTime?: string;
-  attachments?: unknown[];
+  attachments?: string[];
   labelIds?: string[];
+}
+
+function attachmentIcon(filename: string) {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (["jpg","jpeg","png","gif","webp","svg"].includes(ext)) return "🖼️";
+  if (ext === "pdf") return "📄";
+  if (["doc","docx"].includes(ext)) return "📝";
+  if (["xls","xlsx","csv"].includes(ext)) return "📊";
+  if (["zip","rar","7z","tar","gz"].includes(ext)) return "🗜️";
+  if (["mp4","mov","avi","mkv"].includes(ext)) return "🎬";
+  if (["mp3","wav","m4a"].includes(ext)) return "🎵";
+  return "📎";
 }
 
 function formatDate(str: string) {
@@ -42,9 +55,16 @@ function EmailCard({ email, index }: { email: Email; index: number }) {
             <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
               {email.sender ? senderName(email.sender) : "Unknown"}
             </span>
-            <span className="shrink-0 text-xs text-gray-400 dark:text-gray-500">
-              {email.dateTime ? formatDate(email.dateTime) : ""}
-            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {email.attachments && email.attachments.length > 0 && (
+                <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" title={`${email.attachments.length} attachment(s)`}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.586-6.586a4 4 0 00-5.656-5.656L5.757 10.757a6 6 0 008.485 8.485L19 14" />
+                </svg>
+              )}
+              <span className="text-xs text-gray-400 dark:text-gray-500">
+                {email.dateTime ? formatDate(email.dateTime) : ""}
+              </span>
+            </div>
           </div>
           <p className="text-sm text-gray-700 dark:text-gray-300 truncate">{email.subject ?? "(no subject)"}</p>
           <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">{email.body?.slice(0, 80)}</p>
@@ -58,11 +78,16 @@ function EmailCard({ email, index }: { email: Email; index: number }) {
       </summary>
       <div className="px-4 pb-4 pt-1 ml-11">
         {email.attachments && email.attachments.length > 0 && (
-          <div className="flex items-center gap-1 mb-2 text-xs text-gray-400 dark:text-gray-500">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.586-6.586a4 4 0 00-5.656-5.656L5.757 10.757a6 6 0 008.485 8.485L19 14" />
-            </svg>
-            {email.attachments.length} attachment{email.attachments.length > 1 ? "s" : ""}
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {email.attachments.map((filename, idx) => (
+              <span
+                key={idx}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600"
+              >
+                <span>{attachmentIcon(filename)}</span>
+                <span className="max-w-[120px] truncate">{filename}</span>
+              </span>
+            ))}
           </div>
         )}
         <pre className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words font-sans max-h-64 overflow-y-auto leading-relaxed">
