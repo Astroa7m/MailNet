@@ -6,8 +6,9 @@ import { CopilotChat } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import { Markdown } from "@copilotkit/react-ui";
 import { useSidebar } from "../components/SidebarContext";
+import { API } from "../lib/api";
 import ToolActions from "../components/ToolActions";
-import ToolCard from "../components/ToolCard";
+import ToolCallRenderer from "../components/ToolCallRenderer";
 import SettingsModal from "../components/SettingsModal";
 
 function CustomAssistantMessage(props: any) {
@@ -15,6 +16,133 @@ function CustomAssistantMessage(props: any) {
   return (
     <div className="ck-markdown">
       <Markdown content={content} />
+    </div>
+  );
+}
+
+interface AttachmentToken { id: string; filename: string }
+
+function parseAttachments(raw: unknown): { clean: string; attachments: AttachmentToken[] } {
+  if (typeof raw !== "string") return { clean: "", attachments: [] };
+  const re = /\[Attached file ID:\s*([^\s\]()]+)(?:\s*\(([^)]*)\))?\]/g;
+  const attachments: AttachmentToken[] = [];
+  const clean = raw.replace(re, (_, id, filename) => {
+    attachments.push({ id, filename: filename ?? id });
+    return "";
+  }).trim();
+  return { clean, attachments };
+}
+
+// Handles both history string content and live CopilotKit multimodal arrays.
+function parseContent(raw: unknown): { clean: string; attachments: AttachmentToken[] } {
+  if (Array.isArray(raw)) {
+    const textParts: string[] = [];
+    const attachments: AttachmentToken[] = [];
+    for (const part of raw) {
+      const t = part?.type;
+      if (t === "text") {
+        textParts.push(part?.text ?? "");
+      } else if (["image", "image_url", "file", "url"].includes(t)) {
+        const url = part?.source?.value ?? part?.image_url?.url ?? part?.url ?? part?.value ?? "";
+        if (typeof url === "string" && url) {
+          const id = url.includes("/attachment-raw/") ? url.split("/attachment-raw/").pop()! : url;
+          const filename = part?.metadata?.filename ?? "";
+          attachments.push({ id, filename: filename || id });
+        }
+      }
+    }
+    return { clean: textParts.join(" ").trim(), attachments };
+  }
+  return parseAttachments(raw);
+}
+
+const USER_BUBBLE: React.CSSProperties = {
+  background: "#3b82f6",
+  color: "#ffffff",
+  borderRadius: "16px 16px 4px 16px",
+  fontSize: "0.875rem",
+  padding: "10px 14px",
+  maxWidth: "78%",
+  boxShadow: "0 1px 3px rgba(59,130,246,0.3)",
+  wordBreak: "break-word",
+};
+
+const THUMB: React.CSSProperties = {
+  width: 96, height: 96, objectFit: "cover", borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.2)", flexShrink: 0, display: "block", cursor: "zoom-in",
+};
+
+function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 9999,
+        display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}
+    >
+      <img
+        src={src} alt={alt}
+        onClick={e => e.stopPropagation()}
+        style={{ maxWidth: "90vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 10,
+          boxShadow: "0 8px 40px rgba(0,0,0,0.6)" }}
+      />
+    </div>
+  );
+}
+
+function AttachmentChip({ id, filename }: AttachmentToken) {
+  const [isImage, setIsImage] = useState(true);
+  const [lightbox, setLightbox] = useState(false);
+  const src = `${API}/attachment-raw/${id}`;
+  return (
+    <>
+      {lightbox && <ImageLightbox src={src} alt={filename} onClose={() => setLightbox(false)} />}
+      {isImage ? (
+        <img src={src} alt={filename} title={filename} style={THUMB}
+          onError={() => setIsImage(false)} onClick={() => setLightbox(true)} />
+      ) : (
+        <span
+          style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6,
+            background: "rgba(255,255,255,0.2)", fontSize: "0.75rem", color: "white",
+            border: "1px solid rgba(255,255,255,0.2)", maxWidth: 140, overflow: "hidden",
+            textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          title={filename}
+        >
+          📎 {filename}
+        </span>
+      )}
+    </>
+  );
+}
+
+function ConstrainedImageRenderer({ src, alt }: any) {
+  const [lightbox, setLightbox] = useState(false);
+  return (
+    <>
+      {lightbox && <ImageLightbox src={src} alt={alt ?? "attachment"} onClose={() => setLightbox(false)} />}
+      <img src={src} alt={alt ?? "attachment"}
+        style={{ ...THUMB, marginTop: 6 }} onClick={() => setLightbox(true)} />
+    </>
+  );
+}
+
+function CustomUserMessage(props: any) {
+  const content = props.message?.content ?? props.content ?? "";
+  const { clean, attachments } = parseContent(content);
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end", width: "100%", padding: "2px 0" }}>
+      <div style={USER_BUBBLE}>
+        {clean && <span>{clean}</span>}
+        {attachments.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: clean ? 8 : 0 }}>
+            {attachments.map((att) => <AttachmentChip key={att.id} {...att} />)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -33,7 +161,7 @@ async function uploadAttachment(file: File): Promise<{ type: "url"; value: strin
   if (file.size > 25 * 1024 * 1024) throw new Error(`"${file.name}" exceeds the 25 MB limit.`);
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("http://localhost:8002/upload-attachment", {
+  const res = await fetch(`${API}/upload-attachment`, {
     method: "POST",
     credentials: "include",
     body: form,
@@ -41,7 +169,7 @@ async function uploadAttachment(file: File): Promise<{ type: "url"; value: strin
   if (!res.ok) throw new Error(`Upload failed (${res.status})`);
   const data = await res.json();
   // Return a real URL so CopilotKit can show an image preview; backend strips it to just the file_id
-  return { type: "url", value: `http://localhost:8002/attachment-raw/${data.file_id}`, mimeType: file.type || "application/octet-stream" };
+  return { type: "url", value: `${API}/attachment-raw/${data.file_id}`, mimeType: file.type || "application/octet-stream" };
 }
 
 function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMessage, UserMessage, ImageRenderer, onRegenerate, onCopy }: any) {
@@ -61,9 +189,12 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
           if (msg.role === "tool_call") {
             return (
               <div key={msg.id} className="px-4 py-1">
-                <ToolCard name={msg.content} status="complete" args={msg.args} result={msg.result} />
+                <ToolCallRenderer name={msg.content} status="complete" args={msg.args} result={msg.result} />
               </div>
             );
+          }
+          if (msg.role === "user") {
+            return <CustomUserMessage key={msg.id} message={{ content: msg.content }} />;
           }
           const ckMsg = { id: msg.id, role: msg.role, content: msg.content };
           return (
@@ -75,8 +206,8 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
               index={i}
               isCurrentMessage={false}
               AssistantMessage={CustomAssistantMessage}
-              UserMessage={UserMessage}
-              ImageRenderer={ImageRenderer}
+              UserMessage={CustomUserMessage}
+              ImageRenderer={ConstrainedImageRenderer}
               onRegenerate={undefined}
               onCopy={onCopy}
             />
@@ -91,8 +222,8 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
             index={renderableHistory.length + i}
             isCurrentMessage={i === newMessages.length - 1}
             AssistantMessage={AssistantMessage}
-            UserMessage={UserMessage}
-            ImageRenderer={ImageRenderer}
+            UserMessage={CustomUserMessage}
+            ImageRenderer={ConstrainedImageRenderer}
             onRegenerate={onRegenerate}
             onCopy={onCopy}
           />
@@ -142,7 +273,7 @@ export default function ThreadPage() {
 
   useEffect(() => {
     setHistory([]);
-    fetch(`http://localhost:8002/threads/${threadId}/messages`, { credentials: "include" })
+    fetch(`${API}/threads/${threadId}/messages`, { credentials: "include" })
       .then(r => r.ok ? r.json() : [])
       .then(setHistory)
       .catch(() => {});
@@ -224,7 +355,7 @@ export default function ThreadPage() {
                       Settings
                     </button>
                     <button
-                      onClick={() => { window.location.href = "http://localhost:8002/logout"; }}
+                      onClick={() => { window.location.href = `${API}/logout`; }}
                       className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

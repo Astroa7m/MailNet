@@ -3,6 +3,7 @@ import { useRef, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSidebar } from "./components/SidebarContext";
 import SettingsModal from "./components/SettingsModal";
+import { API } from "./lib/api";
 
 const SUGGESTIONS = [
   {
@@ -47,6 +48,7 @@ export default function Home() {
   const [inputValue, setInputValue] = useState("");
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -140,7 +142,7 @@ export default function Home() {
                     Settings
                   </button>
                   <button
-                    onClick={() => { window.location.href = "http://localhost:8002/logout"; }}
+                    onClick={() => { window.location.href = `${API}/logout`; }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -207,7 +209,19 @@ export default function Home() {
               className="w-full px-4 pt-4 pb-2 text-sm text-gray-800 dark:text-gray-200 bg-transparent resize-none outline-none placeholder-gray-400 dark:placeholder-gray-600 leading-relaxed"
             />
             <div className="flex items-center justify-between px-3 pb-3 pt-1">
-              <span className="text-xs text-gray-400 dark:text-gray-600">Press Enter to send</span>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-400 dark:text-gray-600">Press Enter to send</span>
+                <input ref={fileInputRef} type="file" className="hidden" onChange={() => startConversation(inputValue.trim() || undefined)} />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach a file — opens a new conversation"
+                  className="p-1.5 rounded-md text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.586-6.586a4 4 0 00-5.656-5.656L5.757 10.757a6 6 0 008.485 8.485L19 14" />
+                  </svg>
+                </button>
+              </div>
               <button
                 onClick={() => inputValue.trim() && startConversation(inputValue.trim())}
                 disabled={!inputValue.trim()}

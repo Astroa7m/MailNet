@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 
-const API = "http://localhost:8002";
+import { API } from "../lib/api";
 
 interface Preferences {
   language: string;

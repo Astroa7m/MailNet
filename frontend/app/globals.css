@@ -51,13 +51,13 @@ body {
 /* Hide the CopilotKit header title — we use our own */
 .copilotKitHeader { display: none !important; }
 
-/* Attachment image previews — fixed thumbnail size */
+/* Input area attachment chips — fill the chip container, don't overflow it */
 .copilotKitInput img,
 .copilotKitAttachment img,
 [class*="attachment"] img,
 [class*="Attachment"] img {
-  width: 48px !important;
-  height: 48px !important;
+  width: 100% !important;
+  height: 100% !important;
   object-fit: cover !important;
   border-radius: 6px !important;
   display: block !important;
@@ -101,16 +101,6 @@ body {
   background: #2563eb !important;
 }
 
-/* User message bubble */
-.copilotKitUserMessage {
-  background: #3b82f6 !important;
-  color: #ffffff !important;
-  border-radius: 16px 16px 4px 16px !important;
-  font-size: 0.875rem !important;
-  padding: 10px 14px !important;
-  max-width: 78% !important;
-  box-shadow: 0 1px 3px rgba(59,130,246,0.3) !important;
-}
 
 /* Assistant message bubble */
 .copilotKitAssistantMessage {

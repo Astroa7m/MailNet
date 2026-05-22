@@ -2,8 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { SidebarContext, AppUser } from "./SidebarContext";
-
-const API = "http://localhost:8002";
+import { API } from "../lib/api";
 
 interface Thread {
   thread_id: string;
@@ -60,7 +59,7 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
         const data = await r.json();
         setUser({ name: data.name || "", email: data.email || "", picture: data.picture || "", providers: data.providers || [] });
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        fetch(`${API}/tz`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tz }) });
+        fetch(`${API}/tz`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tz }) }).catch(() => {});
       }),
       fetchThreads(),
     ]).finally(() => setLoading(false));
@@ -157,7 +156,7 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
                         }`}
                       >
                         <span className="truncate pr-1 leading-snug">{t.name}</span>
-                        <span
+                        <button
                           onClick={(e) => deleteThread(e, t.thread_id)}
                           className="shrink-0 opacity-0 group-hover:opacity-100 p-0.5 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all"
                           title="Delete"
@@ -165,7 +164,7 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                           </svg>
-                        </span>
+                        </button>
                       </button>
                     ))}
                   </div>

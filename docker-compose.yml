@@ -72,6 +72,7 @@ services:
       - "3000:3000"
     environment:
       FASTAPI_URL: http://api:8002/agent
+      NEXT_PUBLIC_API_URL: http://localhost:8002
     depends_on:
       - api
     restart: unless-stopped

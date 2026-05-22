@@ -7,6 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
+from typing import Optional
 from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from copilotkit import LangGraphAGUIAgent
@@ -671,10 +672,12 @@ def _purge_old_attachments():
 
 
 @app.post("/upload-attachment")
-async def upload_attachment(request: Request, file: UploadFile = File(...)):
+async def upload_attachment(request: Request, file: Optional[UploadFile] = File(None)):
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    if file is None:
+        raise HTTPException(status_code=422, detail="No file provided")
 
     content = await file.read()
     if len(content) > 4 * 1024 * 1024:

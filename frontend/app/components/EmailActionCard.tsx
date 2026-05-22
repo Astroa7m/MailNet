@@ -20,9 +20,11 @@ interface Props {
   result?: string;
   label: string;
   icon: React.ReactNode;
+  pendingLabel?: string;
+  successLabel?: string;
 }
 
-function StatusBadge({ status, result }: { status: string; result?: string }) {
+function StatusBadge({ status, result, successLabel = "Sent" }: { status: string; result?: string; successLabel?: string }) {
   if (status !== "complete") return null;
 
   let ok = true;
@@ -33,12 +35,12 @@ function StatusBadge({ status, result }: { status: string; result?: string }) {
 
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${ok ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400" : "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400"}`}>
-      {ok ? "Sent" : "Failed"}
+      {ok ? successLabel : "Failed"}
     </span>
   );
 }
 
-export default function EmailActionCard({ args, status, result, label, icon }: Props) {
+export default function EmailActionCard({ args, status, result, label, icon, pendingLabel = "Sending…", successLabel = "Sent" }: Props) {
   const pending = status !== "complete";
 
   return (
@@ -52,9 +54,9 @@ export default function EmailActionCard({ args, status, result, label, icon }: P
               <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
-              Sending…
+              {pendingLabel}
             </span>
-          : <StatusBadge status={status} result={result} />
+          : <StatusBadge status={status} result={result} successLabel={successLabel} />
         }
       </div>
 
