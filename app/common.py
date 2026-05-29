@@ -25,6 +25,7 @@ from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from app.extra_tools import schedule_send_email, schedule_recurring_email
+from app.memory_store import remember as memory_remember, recall as memory_recall
 
 load_dotenv()
 
@@ -73,6 +74,14 @@ SYSTEM_PROMPT = Template(
     - include_signature, auto_adjust_tone, include_thread_context must be true or false.
 
     ATTACHMENT RULE: If the user's message contains "[Attached file ID: <id>]", always pass that ID in attachment_ids when calling send_email, draft_email, or reply_to_email. Never omit it.
+
+    MEMORY:
+    - At the start of a new conversation, or whenever the user references how they "usually" do something, call recall_user_context to load what you already know about them, then use it silently — do not announce that you looked it up.
+    - When the user states a durable preference, decide WHERE it belongs:
+      * If it maps to a settings field (language, tone, writing_style, sender_name, organization_name, preferred_greeting, signature, include_signature, default_provider, character_limit), call update_email_settings. Do NOT also store it as a memory.
+      * Otherwise, if it is a durable free-form fact (a recurring contact and how to address them, a standing do/don't instruction, a relationship, an org-specific rule), call remember_user_fact.
+    - Never save one-off task details or things mentioned only in passing.
+    - Never tell the user something was remembered or saved unless the tool result confirms success. If a tool result says it was not saved, not configured, or failed, tell the user plainly that it could not be saved instead of claiming success.
 
     If information needed to complete a task is missing, ask don't guess. Keep responses concise.
     """
@@ -334,6 +343,34 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
         except Exception as e:
             return f"Failed to update settings: {e}"
 
+    def remember_user_fact(fact: str) -> str:
+        """Save a durable, free-form fact about the user to long-term memory.
+
+        Use this ONLY for facts that do NOT fit update_email_settings — for example:
+        recurring contacts and how the user addresses them ('CC Sara on all client
+        emails'), standing instructions ('never email legal on Fridays'),
+        relationships, or organization-specific rules.
+        Do NOT use this for tone/language/signature/provider style preferences —
+        those go through update_email_settings instead.
+        Do NOT save one-off task details. Write the fact as a short standalone
+        sentence (e.g. 'The user's manager is Sara Lee (sara@acme.com).')."""
+        if not user_id:
+            return "Cannot save memory: no user context."
+        return memory_remember(user_id, fact)
+
+    def recall_user_context(query: str) -> str:
+        """Look up what you already know about the user from long-term memory.
+
+        Call this at the start of a new conversation, or whenever the user refers
+        to how they 'usually' do something, who their usual contacts are, or any
+        standing preference you might have saved before. Pass a short query
+        describing what you need (e.g. 'preferred contacts for client updates').
+        Returns a bullet list of remembered facts, or an empty string if nothing
+        relevant is stored. Use the results silently to personalize your response."""
+        if not user_id:
+            return ""
+        return memory_recall(user_id, query)
+
     formatted_sys_prompt = SYSTEM_PROMPT.substitute(language=prefs['language'],
                                                     tone=prefs['tone'],
                                                     writing_style=prefs['writing_style'],
@@ -346,7 +383,8 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
                                                     auto_adjust_tone=prefs['auto_adjust_tone']
                                                     )
     print(f"sys={formatted_sys_prompt}")
-    tools = mcp_tools + [bound_schedule_send_email, bound_schedule_recurring_email, update_email_settings]
+    tools = mcp_tools + [bound_schedule_send_email, bound_schedule_recurring_email, update_email_settings,
+                         remember_user_fact, recall_user_context]
     return create_agent(
         llm,
         tools,

@@ -9,6 +9,8 @@ const TOOL_META: Record<string, { label: string; pendingLabel: string; successLa
   update_email_settings:    { label: "Update Settings",          pendingLabel: "Saving…",     successLabel: "Saved" },
   schedule_send_email:      { label: "Schedule Email",           pendingLabel: "Scheduling…", successLabel: "Scheduled" },
   schedule_recurring_email: { label: "Schedule Recurring Email", pendingLabel: "Scheduling…", successLabel: "Scheduled" },
+  remember_user_fact:       { label: "Remember",                 pendingLabel: "Saving…",     successLabel: "Remembered" },
+  recall_user_context:      { label: "Recall Memory",            pendingLabel: "Recalling…",  successLabel: "Recalled" },
 };
 
 const SendIcon = () => (

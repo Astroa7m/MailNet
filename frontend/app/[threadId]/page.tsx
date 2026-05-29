@@ -20,14 +20,22 @@ function CustomAssistantMessage(props: any) {
   );
 }
 
-interface AttachmentToken { id: string; filename: string }
+interface AttachmentToken { id: string; filename: string; isImage: boolean }
+
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "heic"]);
+function looksLikeImage(filename: string, mimeType?: string): boolean {
+  if (mimeType?.startsWith("image/")) return true;
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTS.has(ext);
+}
 
 function parseAttachments(raw: unknown): { clean: string; attachments: AttachmentToken[] } {
   if (typeof raw !== "string") return { clean: "", attachments: [] };
   const re = /\[Attached file ID:\s*([^\s\]()]+)(?:\s*\(([^)]*)\))?\]/g;
   const attachments: AttachmentToken[] = [];
   const clean = raw.replace(re, (_, id, filename) => {
-    attachments.push({ id, filename: filename ?? id });
+    const name = filename ?? id;
+    attachments.push({ id, filename: name, isImage: looksLikeImage(name) });
     return "";
   }).trim();
   return { clean, attachments };
@@ -42,12 +50,14 @@ function parseContent(raw: unknown): { clean: string; attachments: AttachmentTok
       const t = part?.type;
       if (t === "text") {
         textParts.push(part?.text ?? "");
-      } else if (["image", "image_url", "file", "url"].includes(t)) {
+      } else if (["image", "image_url", "file", "url", "document", "audio", "video", "binary"].includes(t)) {
         const url = part?.source?.value ?? part?.image_url?.url ?? part?.url ?? part?.value ?? "";
         if (typeof url === "string" && url) {
           const id = url.includes("/attachment-raw/") ? url.split("/attachment-raw/").pop()! : url;
           const filename = part?.metadata?.filename ?? "";
-          attachments.push({ id, filename: filename || id });
+          const mime = part?.source?.mimeType ?? part?.mimeType ?? "";
+          const name = filename || id;
+          attachments.push({ id, filename: name, isImage: t === "image" || looksLikeImage(name, mime) });
         }
       }
     }
@@ -94,26 +104,86 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   );
 }
 
-function AttachmentChip({ id, filename }: AttachmentToken) {
-  const [isImage, setIsImage] = useState(true);
+function PdfThumbnail({ src, filename, onClick }: { src: string; filename: string; onClick: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const pdfjs: any = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+        const doc = await pdfjs.getDocument({ url: src, withCredentials: true }).promise;
+        if (cancelled) return;
+        const page = await doc.getPage(1);
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = 96 / viewport.width;
+        const scaled = page.getViewport({ scale });
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = scaled.width;
+        canvas.height = scaled.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        await page.render({ canvasContext: ctx, viewport: scaled, canvas }).promise;
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [src]);
+
+  if (failed) {
+    return <FileChip src={src} filename={filename} />;
+  }
+  return (
+    <canvas
+      ref={canvasRef}
+      title={filename}
+      onClick={onClick}
+      style={{ ...THUMB, background: "white" }}
+    />
+  );
+}
+
+function FileChip({ src, filename }: { src: string; filename: string }) {
+  return (
+    <a href={src} target="_blank" rel="noopener noreferrer" download={filename}
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 8,
+        background: "rgba(255,255,255,0.18)", fontSize: "0.75rem", color: "white", textDecoration: "none",
+        border: "1px solid rgba(255,255,255,0.25)", maxWidth: 180, overflow: "hidden",
+        textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+      title={filename}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ flexShrink: 0 }}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8" />
+      </svg>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{filename}</span>
+    </a>
+  );
+}
+
+function isPdf(filename: string): boolean {
+  return filename.toLowerCase().endsWith(".pdf");
+}
+
+function AttachmentChip({ id, filename, isImage }: AttachmentToken) {
+  const [imgFailed, setImgFailed] = useState(false);
   const [lightbox, setLightbox] = useState(false);
   const src = `${API}/attachment-raw/${id}`;
+  const showImage = isImage && !imgFailed;
+  const showPdf = !isImage && isPdf(filename);
   return (
     <>
       {lightbox && <ImageLightbox src={src} alt={filename} onClose={() => setLightbox(false)} />}
-      {isImage ? (
+      {showImage ? (
         <img src={src} alt={filename} title={filename} style={THUMB}
-          onError={() => setIsImage(false)} onClick={() => setLightbox(true)} />
+          onError={() => setImgFailed(true)} onClick={() => setLightbox(true)} />
+      ) : showPdf ? (
+        <PdfThumbnail src={src} filename={filename} onClick={() => window.open(src, "_blank")} />
       ) : (
-        <span
-          style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6,
-            background: "rgba(255,255,255,0.2)", fontSize: "0.75rem", color: "white",
-            border: "1px solid rgba(255,255,255,0.2)", maxWidth: 140, overflow: "hidden",
-            textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          title={filename}
-        >
-          📎 {filename}
-        </span>
+        <FileChip src={src} filename={filename} />
       )}
     </>
   );

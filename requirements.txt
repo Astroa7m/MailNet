@@ -22,3 +22,5 @@ slowapi
 motor
 ag-ui-langgraph
 copilotkit
+mem0ai
+google-genai

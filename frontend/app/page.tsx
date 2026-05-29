@@ -40,16 +40,61 @@ const SUGGESTIONS = [
   },
 ];
 
+interface PendingAttachment { id: string; name: string; isImage: boolean }
+
+const IMAGE_EXTS = new Set(["png","jpg","jpeg","gif","webp","bmp","svg","avif","heic"]);
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTS.has(ext);
+}
+
 export default function Home() {
   const { user, open: sidebarOpen, toggle: toggleSidebar } = useSidebar();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+
+  async function uploadFiles(files: FileList | File[]) {
+    setUploadError(null);
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (file.size > 20 * 1024 * 1024) {
+          setUploadError(`"${file.name}" exceeds the 20 MB limit.`);
+          continue;
+        }
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch(`${API}/upload-attachment`, {
+          method: "POST",
+          credentials: "include",
+          body: form,
+        });
+        if (!res.ok) {
+          setUploadError(`Upload failed for "${file.name}" (${res.status})`);
+          continue;
+        }
+        const data = await res.json();
+        setAttachments((prev) => [...prev, { id: data.file_id, name: file.name, isImage: isImageFile(file) }]);
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -69,13 +114,20 @@ export default function Home() {
 
   function startConversation(prompt?: string) {
     const id = crypto.randomUUID();
-    router.push(prompt ? `/${id}?prompt=${encodeURIComponent(prompt)}` : `/${id}`);
+    const text = prompt?.trim() ?? "";
+    const markers = attachments.map((a) => `[Attached file ID: ${a.id} (${a.name})]`).join(" ");
+    const combined = [text, markers].filter(Boolean).join(" ");
+    if (!combined && attachments.length === 0) {
+      router.push(`/${id}`);
+      return;
+    }
+    router.push(`/${id}?prompt=${encodeURIComponent(combined)}`);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (inputValue.trim()) startConversation(inputValue.trim());
+      if (inputValue.trim() || attachments.length > 0) startConversation(inputValue);
     }
   }
 
@@ -198,24 +250,64 @@ export default function Home() {
           </div>
 
           {/* Composer input */}
-          <div className="w-full bg-white dark:bg-[#1a1a1a] border border-gray-200 dark:border-[#2a2a2a] rounded-2xl shadow-sm overflow-hidden">
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setDragOver(false); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+            }}
+            className={`w-full bg-white dark:bg-[#1a1a1a] border rounded-2xl shadow-sm overflow-hidden transition-colors ${
+              dragOver ? "border-blue-500 ring-2 ring-blue-500/20" : "border-gray-200 dark:border-[#2a2a2a]"
+            }`}
+          >
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-3 pt-3">
+                {attachments.map((a) => (
+                  <div key={a.id} className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-md bg-gray-100 dark:bg-[#252525] text-xs text-gray-700 dark:text-gray-300 max-w-[200px]">
+                    <span title={a.name} className="truncate">{a.isImage ? "🖼" : "📎"} {a.name}</span>
+                    <button
+                      onClick={() => removeAttachment(a.id)}
+                      className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-[#333] text-gray-500"
+                      title="Remove"
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+                {uploading && <span className="text-xs text-gray-500 self-center">Uploading…</span>}
+              </div>
+            )}
             <textarea
               ref={inputRef}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask anything about your emails…"
+              placeholder={dragOver ? "Drop files to attach…" : "Ask anything about your emails…"}
               rows={3}
               className="w-full px-4 pt-4 pb-2 text-sm text-gray-800 dark:text-gray-200 bg-transparent resize-none outline-none placeholder-gray-400 dark:placeholder-gray-600 leading-relaxed"
             />
             <div className="flex items-center justify-between px-3 pb-3 pt-1">
               <div className="flex items-center gap-1">
                 <span className="text-xs text-gray-400 dark:text-gray-600">Press Enter to send</span>
-                <input ref={fileInputRef} type="file" className="hidden" onChange={() => startConversation(inputValue.trim() || undefined)} />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.length) uploadFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  title="Attach a file — opens a new conversation"
-                  className="p-1.5 rounded-md text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors"
+                  disabled={uploading}
+                  title="Attach files"
+                  className="p-1.5 rounded-md text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors disabled:opacity-50"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.586-6.586a4 4 0 00-5.656-5.656L5.757 10.757a6 6 0 008.485 8.485L19 14" />
@@ -223,8 +315,8 @@ export default function Home() {
                 </button>
               </div>
               <button
-                onClick={() => inputValue.trim() && startConversation(inputValue.trim())}
-                disabled={!inputValue.trim()}
+                onClick={() => (inputValue.trim() || attachments.length > 0) && startConversation(inputValue)}
+                disabled={!inputValue.trim() && attachments.length === 0}
                 className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
@@ -234,6 +326,9 @@ export default function Home() {
               </button>
             </div>
           </div>
+          {uploadError && (
+            <div className="w-full text-xs text-red-500 -mt-4">{uploadError}</div>
+          )}
 
           {/* Suggestion chips */}
           <div className="grid grid-cols-2 gap-2 w-full">

@@ -276,7 +276,7 @@ else:
                 if t == "text":
                     text = part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
                     text_parts.append(text or "")
-                elif t in ("image", "image_url", "file", "url"):
+                elif t in ("image", "image_url", "file", "url", "document", "audio", "video", "binary"):
                     if isinstance(part, dict):
                         source = part.get("source") or {}
                         val = (source.get("value") if isinstance(source, dict) else getattr(source, "value", "")) \
@@ -680,8 +680,8 @@ async def upload_attachment(request: Request, file: Optional[UploadFile] = File(
         raise HTTPException(status_code=422, detail="No file provided")
 
     content = await file.read()
-    if len(content) > 4 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 4 MB limit")
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
     _purge_old_attachments()
     file_id = str(uuid.uuid4())
