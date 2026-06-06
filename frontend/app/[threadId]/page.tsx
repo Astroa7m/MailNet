@@ -10,6 +10,8 @@ import { API } from "../lib/api";
 import ToolActions from "../components/ToolActions";
 import ToolCallRenderer from "../components/ToolCallRenderer";
 import SettingsModal from "../components/SettingsModal";
+import ApprovalInterrupt from "../components/ApprovalInterrupt";
+import { InterruptProvider } from "../components/InterruptContext";
 
 function CustomAssistantMessage(props: any) {
   const content: string = props.message?.content ?? props.content ?? "";
@@ -362,7 +364,9 @@ export default function ThreadPage() {
   return (
     <HistoryContext.Provider value={history}>
     <CopilotKit runtimeUrl="/api/copilotkit" agent="mailing_net_agent" threadId={threadId}>
+    <InterruptProvider>
       <ToolActions />
+      <ApprovalInterrupt threadId={threadId} />
       <AutoSend />
       <div className="flex flex-col h-screen bg-white dark:bg-[#0f0f0f]">
         <header className="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-[#1e1e1e] shrink-0">
@@ -454,6 +458,7 @@ export default function ThreadPage() {
           />
         </div>
       </div>
+    </InterruptProvider>
     </CopilotKit>
     </HistoryContext.Provider>
   );

@@ -32,7 +32,7 @@ def _build_config() -> dict:
             },
         },
         "llm": {
-            # Gemini for fact extraction — avoids the Groq free-tier 8k TPM limit
+            # Gemini for fact extraction, which avoids the Groq free-tier 8k TPM limit
             # that mem0's extraction prompt blows past, and reuses GOOGLE_API_KEY.
             "provider": "gemini",
             "config": {

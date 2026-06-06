@@ -139,7 +139,7 @@ def schedule_send_email(
     try:
         response = requests.post(endpoint, json=json_payload)
         response.raise_for_status()
-        return f"Scheduled successfully — email will be sent at {dt.strftime('%Y-%m-%d %H:%M %Z')}"
+        return f"Scheduled successfully. The email will be sent at {dt.strftime('%Y-%m-%d %H:%M %Z')}"
     except Exception as e:
         extras = f"\nCode: {response.status_code}, Error: {response.text}" if response else ""
         return f"Scheduling failed: {e}" + extras

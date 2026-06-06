@@ -245,7 +245,7 @@ export default function Home() {
               {firstName ? `Good to see you, ${firstName}` : "Welcome to MailNet"}
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Your AI email assistant — what would you like to do?
+              Your AI email assistant. What would you like to do?
             </p>
           </div>
 

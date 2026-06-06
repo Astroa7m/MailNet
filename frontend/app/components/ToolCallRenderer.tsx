@@ -2,6 +2,7 @@
 import ToolCard from "./ToolCard";
 import EmailListCard from "./EmailListCard";
 import EmailActionCard from "./EmailActionCard";
+import { useInterruptContext } from "./InterruptContext";
 
 const TOOL_META: Record<string, { label: string; pendingLabel: string; successLabel: string }> = {
   send_draft:               { label: "Send Draft",               pendingLabel: "Sending…",    successLabel: "Sent" },
@@ -11,6 +12,13 @@ const TOOL_META: Record<string, { label: string; pendingLabel: string; successLa
   schedule_recurring_email: { label: "Schedule Recurring Email", pendingLabel: "Scheduling…", successLabel: "Scheduled" },
   remember_user_fact:       { label: "Remember",                 pendingLabel: "Saving…",     successLabel: "Remembered" },
   recall_user_context:      { label: "Recall Memory",            pendingLabel: "Recalling…",  successLabel: "Recalled" },
+};
+
+const CONFIRM_LABELS: Record<string, { confirm: string; danger?: boolean }> = {
+  send_email:     { confirm: "Send" },
+  reply_to_email: { confirm: "Send reply" },
+  send_draft:     { confirm: "Send" },
+  delete_email:   { confirm: "Delete", danger: true },
 };
 
 const SendIcon = () => (
@@ -36,19 +44,58 @@ interface Props {
   result?: string;
 }
 
+function ApprovalButtons({ tool, resolve }: { tool: string; resolve: (r: any) => void }) {
+  const meta = CONFIRM_LABELS[tool] ?? { confirm: "Confirm" };
+  return (
+    <div className="flex items-center justify-between px-4 py-2.5 border border-t-0 border-gray-200 dark:border-gray-700 rounded-b-xl bg-gray-50 dark:bg-gray-800/60">
+      <span className="text-xs text-gray-400 dark:text-gray-500">Confirm before proceeding</span>
+      <div className="flex gap-2">
+        <button
+          onClick={() => resolve({ approved: false })}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors cursor-pointer"
+        >
+          Decline
+        </button>
+        <button
+          onClick={() => resolve({ approved: true })}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors cursor-pointer border-none ${meta.danger ? "bg-red-600 hover:bg-red-700" : "bg-blue-600 hover:bg-blue-700"}`}
+        >
+          {meta.confirm}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ToolCallRenderer({ name, status, args, result }: Props) {
+  const { pending } = useInterruptContext();
+  // The approval buttons attach only to the live, in-progress card whose tool
+  // matches the pending interrupt. Historical cards are always "complete", so
+  // an old send_email card never sprouts buttons when a new send is awaiting
+  // approval, and we only flatten the card's bottom corners when buttons follow.
+  const showApproval = !!pending && pending.tool === name && status !== "complete";
+
   if (name === "read_emails" || name === "search_emails") {
     return <EmailListCard status={status} result={result} />;
   }
+
+  let card: React.ReactNode;
   if (name === "send_email") {
-    return <EmailActionCard args={args as any} status={status} result={result} label="Send Email" icon={<SendIcon />} pendingLabel="Sending…" successLabel="Sent" />;
+    card = <EmailActionCard args={args as any} status={status} result={result} label="Send Email" icon={<SendIcon />} pendingLabel="Sending…" successLabel="Sent" />;
+  } else if (name === "draft_email") {
+    card = <EmailActionCard args={args as any} status={status} result={result} label="Save Draft" icon={<DraftIcon />} pendingLabel="Saving…" successLabel="Saved" />;
+  } else if (name === "reply_to_email") {
+    card = <EmailActionCard args={args as any} status={status} result={result} label="Reply to Email" icon={<ReplyIcon />} pendingLabel="Sending…" successLabel="Sent" />;
+  } else {
+    card = <ToolCard name={name} status={status} args={args} result={result} {...TOOL_META[name]} />;
   }
-  if (name === "draft_email") {
-    return <EmailActionCard args={args as any} status={status} result={result} label="Save Draft" icon={<DraftIcon />} pendingLabel="Saving…" successLabel="Saved" />;
-  }
-  if (name === "reply_to_email") {
-    return <EmailActionCard args={args as any} status={status} result={result} label="Reply to Email" icon={<ReplyIcon />} pendingLabel="Sending…" successLabel="Sent" />;
-  }
-  const meta = TOOL_META[name];
-  return <ToolCard name={name} status={status} args={args} result={result} {...meta} />;
+
+  if (!showApproval) return <>{card}</>;
+
+  return (
+    <div>
+      <div className="[&>div]:rounded-b-none">{card}</div>
+      <ApprovalButtons tool={name} resolve={pending!.resolve} />
+    </div>
+  );
 }

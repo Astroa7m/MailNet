@@ -241,7 +241,14 @@ else:
 
         # lazy thread creation, only save to DB on first message
         thread_id = input_data.thread_id
-        if thread_id and not db["threads"].find_one({"thread_id": thread_id}):
+        existing_thread = db["threads"].find_one({"thread_id": thread_id}) if thread_id else None
+        # The LangGraph checkpointer is keyed purely on thread_id, so a thread_id
+        # belonging to another user must be rejected before the graph loads its
+        # conversation history. Otherwise one user could read or continue another
+        # user's thread just by knowing its id.
+        if existing_thread and existing_thread.get("user_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="You do not have access to this conversation")
+        if thread_id and not existing_thread:
             title = "New conversation"
             user_msgs = [m for m in input_data.messages if m.role == "user"]
             if user_msgs:
@@ -286,7 +293,7 @@ else:
                         source = getattr(part, "source", None)
                         val = getattr(source, "value", "") if source else ""
                         fname = (getattr(part, "metadata", None) or {}).get("filename", "")
-                    # Strip the attachment-raw URL prefix — keep only the file_id UUID
+                    # Strip the attachment-raw URL prefix, keeping only the file_id UUID
                     if "/attachment-raw/" in val:
                         val = val.split("/attachment-raw/")[-1]
                     label = f" ({fname})" if fname else ""
@@ -312,7 +319,7 @@ else:
             except Exception as exc:
                 msg = str(exc)
                 if "not in request.tools" in msg or "tool call validation" in msg.lower():
-                    # Old conversation history references a removed tool — surface a clean error
+                    # Old conversation history references a removed tool, so surface a clean error
                     from ag_ui.core import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, RunFinishedEvent
                     import time as _time
                     ts = int(_time.time() * 1000)
@@ -508,7 +515,7 @@ async def auth_microsoft(request: Request):
             request.session["azure_token"] = encrypt_payload(dict(token))
             FRONT_END_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
         else:
-            # — normal login flow —
+            # normal login flow
             name = user_info.get("name", "")
             picture = user_info.get("picture", "")
             user = get_or_create_user(email, name, picture, "microsoft")
@@ -652,7 +659,7 @@ async def get_thread_messages(thread_id: str, request: Request):
             elif isinstance(msg, AIMessage) and msg.content:
                 result.append({"id": str(msg.id), "role": "assistant", "content": str(msg.content)})
             elif isinstance(msg, ToolMessage):
-                # Suppress ToolMessage — result is already embedded in the tool_call entry
+                # Suppress ToolMessage since the result is already embedded in the tool_call entry
                 result.append({"id": str(msg.id), "role": "_suppress", "content": ""})
         return result
     except Exception as e:
@@ -711,7 +718,7 @@ async def get_attachment(file_id: str):
 
 @app.get("/attachment-raw/{file_id}")
 async def get_attachment_raw(file_id: str):
-    """Returns the raw file bytes — used by CopilotKit for image previews."""
+    """Returns the raw file bytes, used by CopilotKit for image previews."""
     att = _attachment_store.get(file_id)
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found or expired")

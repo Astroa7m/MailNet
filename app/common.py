@@ -23,6 +23,8 @@ from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.types import interrupt
+from langgraph.errors import GraphInterrupt
 
 from app.extra_tools import schedule_send_email, schedule_recurring_email
 from app.memory_store import remember as memory_remember, recall as memory_recall
@@ -76,7 +78,7 @@ SYSTEM_PROMPT = Template(
     ATTACHMENT RULE: If the user's message contains "[Attached file ID: <id>]", always pass that ID in attachment_ids when calling send_email, draft_email, or reply_to_email. Never omit it.
 
     MEMORY:
-    - At the start of a new conversation, or whenever the user references how they "usually" do something, call recall_user_context to load what you already know about them, then use it silently — do not announce that you looked it up.
+    - At the start of a new conversation, or whenever the user references how they "usually" do something, call recall_user_context to load what you already know about them, then use it silently. Do not announce that you looked it up.
     - When the user states a durable preference, decide WHERE it belongs:
       * If it maps to a settings field (language, tone, writing_style, sender_name, organization_name, preferred_greeting, signature, include_signature, default_provider, character_limit), call update_email_settings. Do NOT also store it as a memory.
       * Otherwise, if it is a durable free-form fact (a recurring contact and how to address them, a standing do/don't instruction, a relationship, an org-specific rule), call remember_user_fact.
@@ -346,11 +348,11 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
     def remember_user_fact(fact: str) -> str:
         """Save a durable, free-form fact about the user to long-term memory.
 
-        Use this ONLY for facts that do NOT fit update_email_settings — for example:
+        Use this ONLY for facts that do NOT fit update_email_settings, for example:
         recurring contacts and how the user addresses them ('CC Sara on all client
         emails'), standing instructions ('never email legal on Fridays'),
         relationships, or organization-specific rules.
-        Do NOT use this for tone/language/signature/provider style preferences —
+        Do NOT use this for tone/language/signature/provider style preferences;
         those go through update_email_settings instead.
         Do NOT save one-off task details. Write the fact as a short standalone
         sentence (e.g. 'The user's manager is Sara Lee (sara@acme.com).')."""
@@ -394,10 +396,35 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
     )
 
 
+# Tools that send mail or destroy data. These pause for explicit human approval.
+# before running. Reads, searches, and drafts stay frictionless.
+SENSITIVE_TOOLS = {"send_email", "reply_to_email", "send_draft", "delete_email"}
+
+
 @wrap_tool_call
 async def handle_tool_errors(request, handler):
+    tool_name = request.tool_call["name"]
+
+    # Human-in-the-loop gate. interrupt() runs BEFORE the try/except so a
+    # GraphInterrupt can never be swallowed by the error handler below. On
+    # resume the tool node re-runs and interrupt() returns the decision payload.
+    if tool_name in SENSITIVE_TOOLS:
+        decision = interrupt({
+            "type": "approval",
+            "tool": tool_name,
+            "args": request.tool_call.get("args", {}),
+        })
+        if not (isinstance(decision, dict) and decision.get("approved")):
+            return ToolMessage(
+                content=f"[USER DECLINED] The user reviewed and explicitly chose NOT to proceed with {tool_name}. Respond by acknowledging their decision naturally (e.g. 'Got it, I won't send it.' or 'No problem, I'll hold off.'). Do NOT say you failed, do NOT offer to retry, and do NOT suggest trying again unless the user brings it up.",
+                tool_call_id=request.tool_call["id"],
+            )
+
     try:
         return await handler(request)
+    except GraphInterrupt:
+        # Never convert an interrupt into an error message; let it propagate.
+        raise
     except Exception as e:
         return ToolMessage(
             content=f"Tool error: Please check your input and try again. ({str(e)})",
