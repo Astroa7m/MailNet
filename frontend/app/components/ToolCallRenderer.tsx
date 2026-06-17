@@ -47,9 +47,15 @@ interface Props {
 function ApprovalButtons({ tool, resolve }: { tool: string; resolve: (r: any) => void }) {
   const meta = CONFIRM_LABELS[tool] ?? { confirm: "Confirm" };
   return (
-    <div className="flex items-center justify-between px-4 py-2.5 border border-t-0 border-gray-200 dark:border-gray-700 rounded-b-xl bg-gray-50 dark:bg-gray-800/60">
-      <span className="text-xs text-gray-400 dark:text-gray-500">Confirm before proceeding</span>
-      <div className="flex gap-2">
+    <div className="flex items-center justify-between gap-2 px-4 py-2.5 border border-t-0 border-gray-200 dark:border-gray-700 rounded-b-xl bg-gray-50 dark:bg-gray-800/60">
+      <button
+        onClick={() => resolve({ approved: true, always: true })}
+        className="text-xs text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 hover:underline cursor-pointer whitespace-nowrap"
+        title="Approve and stop asking for this action (manage in Settings → Approvals)"
+      >
+        Don't ask again
+      </button>
+      <div className="flex gap-2 shrink-0">
         <button
           onClick={() => resolve({ approved: false })}
           className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors cursor-pointer"
@@ -67,13 +73,25 @@ function ApprovalButtons({ tool, resolve }: { tool: string; resolve: (r: any) =>
   );
 }
 
+// Background personalization tools run silently. They're logged on the backend
+// ([MEMORY] lines) but never shown as cards in chat, since recall now fires
+// before every task and would otherwise clutter the conversation.
+export const HIDDEN_TOOLS = new Set(["recall_user_context", "remember_user_fact"]);
+
 export default function ToolCallRenderer({ name, status, args, result }: Props) {
   const { pending } = useInterruptContext();
-  // The approval buttons attach only to the live, in-progress card whose tool
-  // matches the pending interrupt. Historical cards are always "complete", so
-  // an old send_email card never sprouts buttons when a new send is awaiting
-  // approval, and we only flatten the card's bottom corners when buttons follow.
-  const showApproval = !!pending && pending.tool === name && status !== "complete";
+
+  if (HIDDEN_TOOLS.has(name)) return null;
+  // The approval buttons attach to the live card awaiting approval. We key off
+  // `result` rather than `status`: when the graph pauses at the interrupt, the
+  // tool-call args finish streaming so CopilotKit flips status to "complete"
+  // even though the tool never ran — but a paused tool has NO result yet, while
+  // every historical card does. So "matches pending tool AND has no result" is
+  // the precise, flicker-free signal.
+  const showApproval = !!pending && pending.tool === name && !result;
+  // While awaiting approval, force the card to read as in-progress instead of
+  // showing a premature "Sent"/"Saved" badge from the args-complete status.
+  const cardStatus = showApproval ? "executing" : status;
 
   if (name === "read_emails" || name === "search_emails") {
     return <EmailListCard status={status} result={result} />;
@@ -81,13 +99,13 @@ export default function ToolCallRenderer({ name, status, args, result }: Props) 
 
   let card: React.ReactNode;
   if (name === "send_email") {
-    card = <EmailActionCard args={args as any} status={status} result={result} label="Send Email" icon={<SendIcon />} pendingLabel="Sending…" successLabel="Sent" />;
+    card = <EmailActionCard args={args as any} status={cardStatus} result={result} label="Send Email" icon={<SendIcon />} pendingLabel="Awaiting approval…" successLabel="Sent" />;
   } else if (name === "draft_email") {
-    card = <EmailActionCard args={args as any} status={status} result={result} label="Save Draft" icon={<DraftIcon />} pendingLabel="Saving…" successLabel="Saved" />;
+    card = <EmailActionCard args={args as any} status={cardStatus} result={result} label="Save Draft" icon={<DraftIcon />} pendingLabel="Saving…" successLabel="Saved" />;
   } else if (name === "reply_to_email") {
-    card = <EmailActionCard args={args as any} status={status} result={result} label="Reply to Email" icon={<ReplyIcon />} pendingLabel="Sending…" successLabel="Sent" />;
+    card = <EmailActionCard args={args as any} status={cardStatus} result={result} label="Reply to Email" icon={<ReplyIcon />} pendingLabel="Awaiting approval…" successLabel="Sent" />;
   } else {
-    card = <ToolCard name={name} status={status} args={args} result={result} {...TOOL_META[name]} />;
+    card = <ToolCard name={name} status={cardStatus} args={args} result={result} {...TOOL_META[name]} />;
   }
 
   if (!showApproval) return <>{card}</>;

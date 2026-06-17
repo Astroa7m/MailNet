@@ -8,7 +8,7 @@ import { Markdown } from "@copilotkit/react-ui";
 import { useSidebar } from "../components/SidebarContext";
 import { API } from "../lib/api";
 import ToolActions from "../components/ToolActions";
-import ToolCallRenderer from "../components/ToolCallRenderer";
+import ToolCallRenderer, { HIDDEN_TOOLS } from "../components/ToolCallRenderer";
 import SettingsModal from "../components/SettingsModal";
 import ApprovalInterrupt from "../components/ApprovalInterrupt";
 import { InterruptProvider } from "../components/InterruptContext";
@@ -259,6 +259,7 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
       <div className="copilotKitMessagesContainer">
         {renderableHistory.map((msg, i) => {
           if (msg.role === "tool_call") {
+            if (HIDDEN_TOOLS.has(msg.content)) return null;
             return (
               <div key={msg.id} className="px-4 py-1">
                 <ToolCallRenderer name={msg.content} status="complete" args={msg.args} result={msg.result} />

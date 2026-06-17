@@ -31,6 +31,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
     build_agent, get_or_create_user, db, mongo_client
+from provider_meta import list_chat_models, validate_key, ProviderError
 
 load_dotenv()
 
@@ -57,6 +58,20 @@ async def ensure_session(request: Request, call_next):
 limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.on_event("startup")
+async def _prewarm_memory():
+    """Build the shared mem0 instance in the background at startup so the first
+    /memories or recall call doesn't pay the ~25s Atlas index init cost."""
+    async def _warm():
+        try:
+            from app.memory_store import _get_memory
+            await asyncio.to_thread(_get_memory)
+            print("[STARTUP] semantic memory pre-warmed")
+        except Exception as e:
+            print(f"[STARTUP] memory pre-warm skipped: {e!r}")
+    asyncio.create_task(_warm())
 is_not_using_copilot_kit = os.getenv("UI_PROVIDER", "custom") == "chainlit"
 CHAINLIT_URL = os.getenv("CHAINLIT_URL")
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -188,22 +203,37 @@ else:
 
         azure_token = None
         google_token = None
+        # Providers whose sign-in has expired (refresh failed). The agent is told
+        # so it can ask the user to reconnect instead of silently returning empty.
+        disconnected = set()
 
         encrypted_azure = request.session.get("azure_token")
         if encrypted_azure:
             azure_token = decrypt_payload(encrypted_azure)
-            fresh = await refresh_microsoft_token_if_needed(azure_token)
-            if fresh != azure_token:
-                azure_token = fresh
-                request.session["azure_token"] = encrypt_payload(fresh)
+            try:
+                fresh = await refresh_microsoft_token_if_needed(azure_token)
+                if fresh != azure_token:
+                    azure_token = fresh
+                    request.session["azure_token"] = encrypt_payload(fresh)
+            except Exception as e:
+                print(f"[AUTH] Microsoft token refresh failed: {e!r}")
+                azure_token = None
+                request.session.pop("azure_token", None)
+                disconnected.add("microsoft")
 
         encrypted_google = request.session.get("google_token")
         if encrypted_google:
             google_token = decrypt_payload(encrypted_google)
-            fresh = await refresh_google_token_if_needed(google_token)
-            if fresh != google_token:
-                google_token = fresh
-                request.session["google_token"] = encrypt_payload(fresh)
+            try:
+                fresh = await refresh_google_token_if_needed(google_token)
+                if fresh != google_token:
+                    google_token = fresh
+                    request.session["google_token"] = encrypt_payload(fresh)
+            except Exception as e:
+                print(f"[AUTH] Google token refresh failed: {e!r}")
+                google_token = None
+                request.session.pop("google_token", None)
+                disconnected.add("google")
 
         # restore missing tokens from MongoDB refresh tokens (e.g. second provider after re-login)
         if not encrypted_google or not encrypted_azure:
@@ -225,8 +255,9 @@ else:
                         }
                         google_token = await refresh_google_token_if_needed(minimal)
                         request.session["google_token"] = encrypt_payload(google_token)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[AUTH] Google token restore failed: {e!r}")
+                        disconnected.add("google")
 
                 if not encrypted_azure and user_doc.get("microsoft_refresh_token"):
                     try:
@@ -234,8 +265,9 @@ else:
                         minimal = {"refresh_token": stored_refresh, "expires_at": 0}
                         azure_token = await refresh_microsoft_token_if_needed(minimal)
                         request.session["azure_token"] = encrypt_payload(azure_token)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[AUTH] Microsoft token restore failed: {e!r}")
+                        disconnected.add("microsoft")
 
         user_tz = request.session.get("tz", "UTC")
 
@@ -267,7 +299,7 @@ else:
                 "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000),
             })
 
-        graph = await build_agent(azure_token, google_token, user_tz, user_id=user["id"])
+        graph = await build_agent(azure_token, google_token, user_tz, user_id=user["id"], disconnected=disconnected)
         agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
 
         def _flatten_content(content) -> str:
@@ -575,6 +607,224 @@ async def update_preferences(request: Request):
     set_fields = {f"preferences.{k}": v for k, v in updates.items()}
     db["users"].update_one({"_id": ObjectId(user["id"])}, {"$set": set_fields})
     return {"ok": True}
+
+
+# Bring-your-own-key: which providers are valid for each slot.
+CHAT_PROVIDERS = {"groq", "google_genai", "openai", "anthropic", "ollama_cloud"}
+EMBED_PROVIDERS = {"google", "openai", "ollama"}
+
+# Shared (developer) keys available per provider. Only Groq and Google are
+# provided by the app; for the rest the user must bring their own key.
+SHARED_KEY_ENV = {
+    "groq": "GROQ_API_KEY",
+    "google_genai": "GOOGLE_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "ollama_cloud": "OLLAMA_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "ollama": "OLLAMA_API_KEY",
+}
+
+
+def _shared_key_for(provider: str) -> Optional[str]:
+    env = SHARED_KEY_ENV.get(provider)
+    return os.getenv(env) if env else None
+
+
+@app.get("/api-keys")
+async def get_api_keys(request: Request):
+    """Return the user's saved provider/model choices, never the raw keys."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"api_keys": 1})
+    api_keys = (doc or {}).get("api_keys") or {}
+    chat = api_keys.get("chat") or {}
+    emb = api_keys.get("embeddings") or {}
+    return {
+        "chat": {
+            "provider": chat.get("provider"),
+            "model": chat.get("model"),
+            "has_key": bool(chat.get("key")),
+        },
+        "embeddings": {
+            "provider": emb.get("provider"),
+            "has_key": bool(emb.get("key")),
+        },
+    }
+
+
+@app.put("/api-keys")
+async def put_api_keys(request: Request):
+    """Save chat and/or embeddings provider + key. Keys are encrypted at rest.
+
+    If a key is omitted for a slot we keep the stored one when the provider is
+    unchanged; if the provider changed without a new key we drop the stale key
+    so the user is prompted to add a matching one.
+    """
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    body = await request.json()
+
+    doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"api_keys": 1})
+    existing = (doc or {}).get("api_keys") or {}
+    new_keys = dict(existing)
+
+    if body.get("chat") is not None:
+        c = body["chat"]
+        provider = c.get("provider")
+        if provider not in CHAT_PROVIDERS:
+            raise HTTPException(status_code=400, detail=f"Invalid chat provider: {provider}")
+        prev = existing.get("chat") or {}
+        model = (c.get("model") or "").strip() or None
+        raw_key = (c.get("key") or "").strip()
+        # Validate the effective key+model with a real call before persisting, so
+        # an invalid key or retired model never gets saved.
+        kept_key = prev["key"] if prev.get("key") and prev.get("provider") == provider else None
+        effective_key = raw_key or (decrypt_payload(kept_key)["key"] if kept_key else None)
+        if effective_key:
+            ok, reason, msg = await asyncio.to_thread(validate_key, provider, effective_key, "chat", model)
+            if not ok:
+                raise HTTPException(status_code=400, detail={"slot": "chat", "reason": reason, "message": msg})
+        slot = {"provider": provider, "model": model}
+        if raw_key:
+            slot["key"] = encrypt_payload({"key": raw_key})
+        elif kept_key:
+            slot["key"] = kept_key
+        new_keys["chat"] = slot
+
+    if body.get("embeddings") is not None:
+        e = body["embeddings"]
+        provider = e.get("provider")
+        if provider not in EMBED_PROVIDERS:
+            raise HTTPException(status_code=400, detail=f"Invalid embeddings provider: {provider}")
+        prev = existing.get("embeddings") or {}
+        raw_key = (e.get("key") or "").strip()
+        kept_key = prev["key"] if prev.get("key") and prev.get("provider") == provider else None
+        effective_key = raw_key or (decrypt_payload(kept_key)["key"] if kept_key else None)
+        if effective_key:
+            ok, reason, msg = await asyncio.to_thread(validate_key, provider, effective_key, "embeddings")
+            if not ok:
+                raise HTTPException(status_code=400, detail={"slot": "embeddings", "reason": reason, "message": msg})
+        slot = {"provider": provider}
+        if raw_key:
+            slot["key"] = encrypt_payload({"key": raw_key})
+        elif kept_key:
+            slot["key"] = kept_key
+        new_keys["embeddings"] = slot
+
+    db["users"].update_one({"_id": ObjectId(user["id"])}, {"$set": {"api_keys": new_keys}})
+    return {"ok": True}
+
+
+@app.post("/provider-models")
+async def provider_models(request: Request):
+    """Validate a key and (for chat) list its available models.
+
+    Used by Settings to populate the model dropdown and to give immediate
+    feedback before the user saves. Uses the posted key if present, otherwise
+    the user's saved key for that slot, otherwise the shared developer key.
+    """
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    body = await request.json()
+    slot = body.get("slot")
+    provider = body.get("provider")
+    key = (body.get("key") or "").strip() or None
+
+    if slot not in ("chat", "embeddings"):
+        raise HTTPException(status_code=400, detail="Unknown slot")
+    valid_providers = CHAT_PROVIDERS if slot == "chat" else EMBED_PROVIDERS
+    if provider not in valid_providers:
+        raise HTTPException(status_code=400, detail=f"Invalid {slot} provider: {provider}")
+
+    if not key:
+        doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"api_keys": 1})
+        saved = ((doc or {}).get("api_keys") or {}).get(slot) or {}
+        if saved.get("provider") == provider and saved.get("key"):
+            key = decrypt_payload(saved["key"])["key"]
+    if not key:
+        key = _shared_key_for(provider)
+    if not key:
+        return {"ok": False, "reason": "error", "message": "No API key available for this provider yet. Paste your key above."}
+
+    if slot == "chat":
+        try:
+            models = await asyncio.to_thread(list_chat_models, provider, key)
+            return {"ok": True, "models": models}
+        except ProviderError as e:
+            return {"ok": False, "reason": e.reason, "message": e.message}
+        except Exception as e:
+            return {"ok": False, "reason": "error", "message": str(e)[:200]}
+    else:
+        ok, reason, msg = await asyncio.to_thread(validate_key, provider, key, "embeddings")
+        return {"ok": True} if ok else {"ok": False, "reason": reason, "message": msg}
+
+
+@app.delete("/api-keys/{slot}")
+async def delete_api_key(slot: str, request: Request):
+    """Remove a saved key slot, reverting that capability to the shared key."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if slot not in ("chat", "embeddings"):
+        raise HTTPException(status_code=404, detail="Unknown key slot")
+    db["users"].update_one({"_id": ObjectId(user["id"])}, {"$unset": {f"api_keys.{slot}": ""}})
+    return {"ok": True}
+
+
+def _user_embed_config(user_id: str):
+    """Resolve a user's smart-features (embeddings) provider + decrypted key, or
+    (None, None) to use the shared default. Mirrors build_agent."""
+    doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"api_keys": 1})
+    cfg = ((doc or {}).get("api_keys") or {}).get("embeddings") or {}
+    provider = cfg.get("provider")
+    if provider and cfg.get("key"):
+        try:
+            return provider, decrypt_payload(cfg["key"])["key"]
+        except Exception:
+            return None, None
+    return None, None
+
+
+@app.get("/memories")
+async def get_memories(request: Request):
+    """List the signed-in user's stored long-term memories."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.memory_store import list_memories
+    provider, key = _user_embed_config(user["id"])
+    items = await asyncio.to_thread(list_memories, user["id"], provider=provider, api_key=key)
+    return {"memories": items}
+
+
+@app.delete("/memories/{memory_id}")
+async def remove_memory(memory_id: str, request: Request):
+    """Delete one of the user's memories by id."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.memory_store import delete_memory
+    provider, key = _user_embed_config(user["id"])
+    ok = await asyncio.to_thread(delete_memory, memory_id, provider=provider, api_key=key)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Could not delete memory")
+    return {"ok": True}
+
+
+@app.delete("/memories")
+async def clear_all_memories(request: Request):
+    """Delete all of the user's memories."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.memory_store import clear_memories
+    provider, key = _user_embed_config(user["id"])
+    ok = await asyncio.to_thread(clear_memories, user["id"], provider=provider, api_key=key)
+    return {"ok": ok}
 
 
 @app.get("/threads")

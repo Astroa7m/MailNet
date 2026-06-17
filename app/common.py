@@ -19,15 +19,19 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from bson import ObjectId
 from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_tool_call
-from langchain_core.messages import ToolMessage
+from langchain.agents.middleware import wrap_tool_call, wrap_model_call
+from langchain_core.messages import ToolMessage, AIMessage
 from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.types import interrupt
 from langgraph.errors import GraphInterrupt
 
 from app.extra_tools import schedule_send_email, schedule_recurring_email
-from app.memory_store import remember as memory_remember, recall as memory_recall
+from app.memory_store import remember as memory_remember, recall as memory_recall, forget as memory_forget
+from app.llm_errors import classify_provider_error, quota_message, auth_message, generic_message
 
 load_dotenv()
 
@@ -49,7 +53,44 @@ DEFAULT_PREFERENCES = {
     "include_thread_context": True,
     "character_limit": 1000,
     "default_provider": "google",
+    "auto_approve_tools": [],
 }
+
+# Chat providers the user can pick in Settings → AI Models. Default model per
+# provider is used when the user does not supply a model override.
+DEFAULT_CHAT_MODELS = {
+    "groq": "openai/gpt-oss-120b",
+    "google_genai": "gemini-2.5-flash",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-haiku-4-5",
+    "ollama_cloud": "gpt-oss:120b",
+}
+
+
+def _build_shared_llm():
+    """The app's default chat model, backed by the owner's shared Groq key."""
+    return ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b", streaming=True)
+
+
+def _build_llm(provider: str, api_key: str, model: Optional[str] = None):
+    """Construct a chat model for any supported provider from a user's key.
+
+    Ollama Cloud is reached through its OpenAI-compatible endpoint, so it reuses
+    ChatOpenAI with a custom base_url rather than a separate dependency.
+    """
+    model = model or DEFAULT_CHAT_MODELS.get(provider)
+    if provider == "groq":
+        return ChatGroq(api_key=api_key, model=model, streaming=True)
+    if provider == "google_genai":
+        return ChatGoogleGenerativeAI(model=model, google_api_key=api_key, streaming=True)
+    if provider == "openai":
+        return ChatOpenAI(model=model, api_key=api_key, streaming=True)
+    if provider == "anthropic":
+        return ChatAnthropic(model=model, api_key=api_key, streaming=True)
+    if provider == "ollama_cloud":
+        return ChatOpenAI(model=model, api_key=api_key, base_url="https://ollama.com/v1", streaming=True)
+    raise ValueError(f"Unknown chat provider: {provider}")
+
 
 SYSTEM_PROMPT = Template(
     """
@@ -78,11 +119,12 @@ SYSTEM_PROMPT = Template(
     ATTACHMENT RULE: If the user's message contains "[Attached file ID: <id>]", always pass that ID in attachment_ids when calling send_email, draft_email, or reply_to_email. Never omit it.
 
     MEMORY:
-    - At the start of a new conversation, or whenever the user references how they "usually" do something, call recall_user_context to load what you already know about them, then use it silently. Do not announce that you looked it up.
+    - ALWAYS call recall_user_context FIRST, before doing any email task (reading, searching, composing, replying, sending, drafting, scheduling) and at the start of a new conversation. Pass a short query describing the task, then apply anything relevant silently. Do this every time, even if the user did not mention a preference and even if you think you already know. Never announce that you looked it up.
     - When the user states a durable preference, decide WHERE it belongs:
       * If it maps to a settings field (language, tone, writing_style, sender_name, organization_name, preferred_greeting, signature, include_signature, default_provider, character_limit), call update_email_settings. Do NOT also store it as a memory.
       * Otherwise, if it is a durable free-form fact (a recurring contact and how to address them, a standing do/don't instruction, a relationship, an org-specific rule), call remember_user_fact.
     - Never save one-off task details or things mentioned only in passing.
+    - When the user asks you to forget, delete, or stop remembering something about them, call forget_memory with a short description of the fact. Confirm what was removed based on the tool result.
     - Never tell the user something was remembered or saved unless the tool result confirms success. If a tool result says it was not saved, not configured, or failed, tell the user plainly that it could not be saved instead of claiming success.
 
     If information needed to complete a task is missing, ask don't guess. Keep responses concise.
@@ -204,16 +246,48 @@ async def refresh_google_token_if_needed(token: dict) -> dict:
         }
 
 
-async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
+async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, disconnected=None):
     prefs = DEFAULT_PREFERENCES.copy()
+    api_keys = {}
     if user_id:
-        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1})
-        if user_doc and "preferences" in user_doc:
-            prefs = user_doc["preferences"]
+        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1, "api_keys": 1})
+        if user_doc:
+            if "preferences" in user_doc:
+                prefs = user_doc["preferences"]
+            api_keys = user_doc.get("api_keys") or {}
 
     checkpointer = MongoDBSaver(mongo_client, db_name="MailNet")
     # checkpointer = InMemorySaver()
-    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b", streaming=True)
+
+    # Chat model: the user's own key if they saved one, otherwise the shared key.
+    # using_shared drives the wording of any limit/auth message later.
+    using_shared = True
+    chat_cfg = api_keys.get("chat") or {}
+    if chat_cfg.get("provider") and chat_cfg.get("key"):
+        try:
+            chat_key = decrypt_payload(chat_cfg["key"])["key"]
+            llm = _build_llm(chat_cfg["provider"], chat_key, chat_cfg.get("model"))
+            using_shared = False
+        except Exception as e:
+            print(f"[CHAT] could not build user LLM ({e!r}); falling back to shared key")
+            llm = _build_shared_llm()
+    else:
+        llm = _build_shared_llm()
+
+    # Smart features (memory): the user's own embedding key if saved, else shared Gemini.
+    embed_cfg = api_keys.get("embeddings") or {}
+    embed_provider = embed_cfg.get("provider")
+    embed_key = None
+    if embed_provider and embed_cfg.get("key"):
+        try:
+            embed_key = decrypt_payload(embed_cfg["key"])["key"]
+        except Exception as e:
+            print(f"[MEMORY] could not decrypt embeddings key ({e!r}); falling back to shared")
+            embed_provider = None
+
+    # Sensitive tools the user has chosen to auto-approve (skip the HITL prompt).
+    auto_approve = set(prefs.get("auto_approve_tools") or [])
+
     mcp_client = MultiServerMCPClient(
         {
             "email_mcp": {
@@ -358,7 +432,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
         sentence (e.g. 'The user's manager is Sara Lee (sara@acme.com).')."""
         if not user_id:
             return "Cannot save memory: no user context."
-        return memory_remember(user_id, fact)
+        return memory_remember(user_id, fact, provider=embed_provider, api_key=embed_key)
 
     def recall_user_context(query: str) -> str:
         """Look up what you already know about the user from long-term memory.
@@ -371,7 +445,20 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
         relevant is stored. Use the results silently to personalize your response."""
         if not user_id:
             return ""
-        return memory_recall(user_id, query)
+        return memory_recall(user_id, query, provider=embed_provider, api_key=embed_key)
+
+    def forget_memory(description: str) -> str:
+        """Remove a saved long-term memory the user no longer wants kept.
+
+        Use when the user asks you to forget, delete, or stop remembering
+        something about them (e.g. 'forget that I CC Sara', 'don't remember my
+        manager anymore'). Pass a short description of the fact to remove; the
+        closest matching memory is deleted. Returns what was removed, or a note
+        if nothing matched. To manage everything at once, the user can open the
+        Memories panel in settings."""
+        if not user_id:
+            return "Cannot remove memory: no user context."
+        return memory_forget(user_id, description, provider=embed_provider, api_key=embed_key)
 
     formatted_sys_prompt = SYSTEM_PROMPT.substitute(language=prefs['language'],
                                                     tone=prefs['tone'],
@@ -384,50 +471,97 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None):
                                                     character_limit=prefs['character_limit'],
                                                     auto_adjust_tone=prefs['auto_adjust_tone']
                                                     )
+
+    # Tell the agent about expired provider sign-ins so it asks the user to
+    # reconnect instead of calling an email tool that silently returns nothing.
+    if disconnected:
+        names = {"google": "Google (Gmail)", "microsoft": "Microsoft (Outlook)"}
+        for prov in disconnected:
+            label = names.get(prov, prov)
+            formatted_sys_prompt += (
+                f"\n\n    CONNECTION STATUS: The user's {label} account sign-in has expired. "
+                f"Do NOT call email tools for {label}. If the user asks to read, search, send, draft, "
+                f"reply to, or schedule email on {label}, tell them plainly that their {label} account "
+                f"needs reconnecting in Settings, and offer to use their other connected account if they have one."
+            )
+
     print(f"sys={formatted_sys_prompt}")
     tools = mcp_tools + [bound_schedule_send_email, bound_schedule_recurring_email, update_email_settings,
-                         remember_user_fact, recall_user_context]
+                         remember_user_fact, recall_user_context, forget_memory]
+
+    # Catch provider quota/auth failures from the chat model and turn them into a
+    # friendly assistant message instead of a hard error. Defined here so it can
+    # capture using_shared, which decides whether we say "add your own key".
+    @wrap_model_call
+    async def handle_model_errors(request, handler):
+        try:
+            return await handler(request)
+        except GraphInterrupt:
+            raise
+        except Exception as e:
+            kind = classify_provider_error(e)
+            if kind == "quota":
+                print(f"[CHAT] quota/limit error (shared={using_shared}): {e!r}")
+                return AIMessage(content=quota_message(using_shared))
+            if kind == "auth":
+                print(f"[CHAT] auth error: {e!r}")
+                return AIMessage(content=auth_message())
+            import traceback
+            traceback.print_exc()
+            return AIMessage(content=generic_message())
+
+    @wrap_tool_call
+    async def handle_tool_errors(request, handler):
+        tool_name = request.tool_call["name"]
+
+        # Human-in-the-loop gate, skipped for actions the user auto-approved.
+        # interrupt() runs BEFORE the try/except so a GraphInterrupt is never
+        # swallowed by the error handler. On resume the tool node re-runs and
+        # interrupt() returns the decision payload.
+        if tool_name in SENSITIVE_TOOLS and tool_name not in auto_approve:
+            decision = interrupt({
+                "type": "approval",
+                "tool": tool_name,
+                "args": request.tool_call.get("args", {}),
+            })
+            approved = isinstance(decision, dict) and decision.get("approved")
+            if not approved:
+                return ToolMessage(
+                    content=f"[USER DECLINED] The user reviewed and explicitly chose NOT to proceed with {tool_name}. Respond by acknowledging their decision naturally (e.g. 'Got it, I won't send it.' or 'No problem, I'll hold off.'). Do NOT say you failed, do NOT offer to retry, and do NOT suggest trying again unless the user brings it up.",
+                    tool_call_id=request.tool_call["id"],
+                )
+            # "Always allow": remember this action so it skips approval next time.
+            if decision.get("always") and user_id:
+                try:
+                    db["users"].update_one(
+                        {"_id": ObjectId(user_id)},
+                        {"$addToSet": {"preferences.auto_approve_tools": tool_name}},
+                    )
+                    auto_approve.add(tool_name)
+                except Exception as e:
+                    print(f"[APPROVAL] could not persist always-allow for {tool_name}: {e!r}")
+
+        try:
+            return await handler(request)
+        except GraphInterrupt:
+            # Never convert an interrupt into an error message; let it propagate.
+            raise
+        except Exception as e:
+            return ToolMessage(
+                content=f"Tool error: Please check your input and try again. ({str(e)})",
+                tool_call_id=request.tool_call["id"],
+                is_error=True
+            )
+
     return create_agent(
         llm,
         tools,
         system_prompt=formatted_sys_prompt,
         checkpointer=checkpointer,
-        middleware=[handle_tool_errors]
+        middleware=[handle_model_errors, handle_tool_errors]
     )
 
 
-# Tools that send mail or destroy data. These pause for explicit human approval.
+# Tools that send mail or destroy data. These pause for explicit human approval
 # before running. Reads, searches, and drafts stay frictionless.
 SENSITIVE_TOOLS = {"send_email", "reply_to_email", "send_draft", "delete_email"}
-
-
-@wrap_tool_call
-async def handle_tool_errors(request, handler):
-    tool_name = request.tool_call["name"]
-
-    # Human-in-the-loop gate. interrupt() runs BEFORE the try/except so a
-    # GraphInterrupt can never be swallowed by the error handler below. On
-    # resume the tool node re-runs and interrupt() returns the decision payload.
-    if tool_name in SENSITIVE_TOOLS:
-        decision = interrupt({
-            "type": "approval",
-            "tool": tool_name,
-            "args": request.tool_call.get("args", {}),
-        })
-        if not (isinstance(decision, dict) and decision.get("approved")):
-            return ToolMessage(
-                content=f"[USER DECLINED] The user reviewed and explicitly chose NOT to proceed with {tool_name}. Respond by acknowledging their decision naturally (e.g. 'Got it, I won't send it.' or 'No problem, I'll hold off.'). Do NOT say you failed, do NOT offer to retry, and do NOT suggest trying again unless the user brings it up.",
-                tool_call_id=request.tool_call["id"],
-            )
-
-    try:
-        return await handler(request)
-    except GraphInterrupt:
-        # Never convert an interrupt into an error message; let it propagate.
-        raise
-    except Exception as e:
-        return ToolMessage(
-            content=f"Tool error: Please check your input and try again. ({str(e)})",
-            tool_call_id=request.tool_call["id"],
-            is_error=True
-        )
