@@ -30,10 +30,19 @@ from bson import ObjectId
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
-    build_agent, get_or_create_user, db, mongo_client
+    build_agent, fetch_mcp_tools, get_or_create_user, db, mongo_client, content_to_text
 from provider_meta import list_chat_models, validate_key, ProviderError
+from logging_config import get_logger
+
+log = get_logger("api")
 
 load_dotenv()
+
+# Patch a truncation bug in ag_ui_langgraph's streaming (it drops all but the
+# first text part of list-shaped content, which cut off Gemini's thinking
+# replies mid-sentence). See app/agui_patch.py.
+from agui_patch import apply as _apply_agui_patch
+_apply_agui_patch()
 
 # adding project root to path
 project_root = Path(__file__).parent.parent
@@ -61,16 +70,24 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.on_event("startup")
-async def _prewarm_memory():
-    """Build the shared mem0 instance in the background at startup so the first
-    /memories or recall call doesn't pay the ~25s Atlas index init cost."""
+async def _prewarm():
+    """Pre-warm the shared mem0 instance and the LangGraph checkpointer at startup
+    so the first user request doesn't pay their lazy-init costs."""
     async def _warm():
         try:
             from app.memory_store import _get_memory
             await asyncio.to_thread(_get_memory)
-            print("[STARTUP] semantic memory pre-warmed")
+            log.info("semantic memory pre-warmed")
         except Exception as e:
-            print(f"[STARTUP] memory pre-warm skipped: {e!r}")
+            log.warning("memory pre-warm skipped: %r", e)
+        try:
+            from common import _checkpointer
+            # A no-op list call forces the checkpointer to open its collection
+            # and set up any TTL indexes before the first real request.
+            await asyncio.to_thread(list, _checkpointer.list(config={"configurable": {"thread_id": "__prewarm__"}}))
+            log.info("checkpointer pre-warmed")
+        except Exception as e:
+            log.warning("checkpointer pre-warm skipped: %r", e)
     asyncio.create_task(_warm())
 is_not_using_copilot_kit = os.getenv("UI_PROVIDER", "custom") == "chainlit"
 CHAINLIT_URL = os.getenv("CHAINLIT_URL")
@@ -88,7 +105,7 @@ class ChainlitAuthMiddleware(BaseHTTPMiddleware):
         user = request.session.get("user")
         if not user:
             # Not authenticated - redirect to login
-            print("[MIDDLEWARE] No user in session, redirecting to login")
+            log.debug("no user in session, redirecting to login")
             return RedirectResponse(url="/", status_code=303)
 
         # Refresh Microsoft token if needed, right here before chainlit sees it
@@ -98,10 +115,10 @@ class ChainlitAuthMiddleware(BaseHTTPMiddleware):
                 azure_token = decrypt_payload(encrypted_azure)
                 fresh_token = await refresh_microsoft_token_if_needed(azure_token)
                 if fresh_token != azure_token:
-                    print("[MIDDLEWARE] Microsoft token refreshed")
+                    log.debug("microsoft token refreshed (middleware)")
                     request.session["azure_token"] = encrypt_payload(fresh_token)
             except Exception as e:
-                print(f"[MIDDLEWARE] Token refresh failed: {e}")
+                log.warning("microsoft token refresh failed (middleware): %r", e)
 
         encrypted_google = request.session.get("google_token")
         if encrypted_google:
@@ -111,10 +128,10 @@ class ChainlitAuthMiddleware(BaseHTTPMiddleware):
                     raise ValueError("google_token decrypted to None")
                 fresh_google = await refresh_google_token_if_needed(google_token)
                 if fresh_google != google_token:
-                    print("[MIDDLEWARE] Google token refreshed")
+                    log.debug("google token refreshed (middleware)")
                     request.session["google_token"] = encrypt_payload(fresh_google)
             except Exception as e:
-                print(f"[MIDDLEWARE] Google token refresh failed: {e}")
+                log.warning("google token refresh failed (middleware): %r", e)
 
         # user is authenticated then continue
         response = await call_next(request)
@@ -197,6 +214,7 @@ if is_not_using_copilot_kit:
 else:
     @app.post("/agent")
     async def agent_endpoint(input_data: RunAgentInput, request: Request):
+        rid = uuid.uuid4().hex[:4]
         user = request.session.get("user")
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
@@ -216,7 +234,7 @@ else:
                     azure_token = fresh
                     request.session["azure_token"] = encrypt_payload(fresh)
             except Exception as e:
-                print(f"[AUTH] Microsoft token refresh failed: {e!r}")
+                log.warning("[req=%s] microsoft token refresh failed: %r", rid, e)
                 azure_token = None
                 request.session.pop("azure_token", None)
                 disconnected.add("microsoft")
@@ -230,7 +248,7 @@ else:
                     google_token = fresh
                     request.session["google_token"] = encrypt_payload(fresh)
             except Exception as e:
-                print(f"[AUTH] Google token refresh failed: {e!r}")
+                log.warning("[req=%s] google token refresh failed: %r", rid, e)
                 google_token = None
                 request.session.pop("google_token", None)
                 disconnected.add("google")
@@ -256,7 +274,7 @@ else:
                         google_token = await refresh_google_token_if_needed(minimal)
                         request.session["google_token"] = encrypt_payload(google_token)
                     except Exception as e:
-                        print(f"[AUTH] Google token restore failed: {e!r}")
+                        log.warning("[req=%s] google token restore failed: %r", rid, e)
                         disconnected.add("google")
 
                 if not encrypted_azure and user_doc.get("microsoft_refresh_token"):
@@ -266,7 +284,7 @@ else:
                         azure_token = await refresh_microsoft_token_if_needed(minimal)
                         request.session["azure_token"] = encrypt_payload(azure_token)
                     except Exception as e:
-                        print(f"[AUTH] Microsoft token restore failed: {e!r}")
+                        log.warning("[req=%s] microsoft token restore failed: %r", rid, e)
                         disconnected.add("microsoft")
 
         user_tz = request.session.get("tz", "UTC")
@@ -299,7 +317,65 @@ else:
                 "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000),
             })
 
-        graph = await build_agent(azure_token, google_token, user_tz, user_id=user["id"], disconnected=disconnected)
+        # Extract the last user message text for proactive recall.
+        last_user_text = ""
+        for m in reversed(input_data.messages):
+            if m.role == "user":
+                c = m.content
+                if isinstance(c, str):
+                    last_user_text = c
+                elif isinstance(c, list):
+                    last_user_text = " ".join(
+                        (p.get("text") if isinstance(p, dict) else getattr(p, "text", "")) or ""
+                        for p in c
+                        if (p.get("type") if isinstance(p, dict) else getattr(p, "type", None)) == "text"
+                    )
+                break
+
+        async def _do_recall() -> str:
+            if not last_user_text.strip():
+                return ""
+            try:
+                from app.memory_store import recall as _recall
+                ep_provider, ep_key = _user_embed_config(user["id"])
+                return await asyncio.to_thread(
+                    _recall, user["id"], last_user_text, provider=ep_provider, api_key=ep_key
+                )
+            except Exception as e:
+                log.warning("[req=%s] proactive recall failed: %r", rid, e)
+                return ""
+
+        conn = "+".join(p for p, t in (("google", google_token), ("microsoft", azure_token)) if t) or "none"
+        log.info(
+            "[req=%s] message user=%s thread=%s msg=%r connected=%s tz=%s",
+            rid, user["id"], (thread_id or "")[:8],
+            (last_user_text or "")[:80], conn, user_tz,
+        )
+
+        # Fetch MCP tools and recall in parallel (both independent of each other).
+        _t_parallel = time.time()
+        # default_provider lives in the DB user doc, not the session `user` dict
+        # (which only holds id/email/name/picture/provider). Reading it from the
+        # session always yielded "google", so a user whose default is Outlook was
+        # silently routed to Gmail. Read it from the DB so the MCP header is right.
+        _pref_doc = db["users"].find_one(
+            {"_id": ObjectId(user["id"])}, {"preferences.default_provider": 1}
+        )
+        user_default_provider = ((_pref_doc or {}).get("preferences") or {}).get("default_provider", "google")
+        log.info("[req=%s] default_provider=%s", rid, user_default_provider)
+        (recalled_context, mcp_tools) = await asyncio.gather(
+            _do_recall(),
+            fetch_mcp_tools(azure_token, google_token, user_default_provider),
+        )
+        log.info("[req=%s] recall+MCP ready in %.2fs", rid, time.time() - _t_parallel)
+
+        # Build agent with pre-fetched tools and recalled context (no extra round-trips).
+        graph = await build_agent(
+            azure_token, google_token, user_tz, user_id=user["id"],
+            disconnected=disconnected, recalled_context=recalled_context,
+            prefetched_mcp_tools=mcp_tools,
+        )
+
         agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
 
         def _flatten_content(content) -> str:
@@ -345,12 +421,51 @@ else:
         )
 
         async def _safe_run():
+            _t_run = time.time()
+            _first = True
+            # Per-message text accumulation + tool tracking, so we can see exactly
+            # what the agent streamed and where it stopped if output is incomplete.
+            text_len: dict = {}        # message_id -> chars streamed
+            tool_names: dict = {}      # tool_call_id -> name
+            n_events = 0
             try:
                 async for e in agent.run(filtered_input):
+                    n_events += 1
+                    etype = getattr(e, "type", "")
+                    if _first:
+                        log.info("[req=%s] first event in %.2fs", rid, time.time() - _t_run)
+                        _first = False
+
+                    if etype == "TEXT_MESSAGE_CONTENT":
+                        mid = getattr(e, "message_id", "")
+                        text_len[mid] = text_len.get(mid, 0) + len(getattr(e, "delta", "") or "")
+                    elif etype == "TEXT_MESSAGE_END":
+                        mid = getattr(e, "message_id", "")
+                        log.info("[req=%s] text message done chars=%d", rid, text_len.get(mid, 0))
+                    elif etype == "TOOL_CALL_START":
+                        name = getattr(e, "tool_call_name", "?")
+                        tcid = getattr(e, "tool_call_id", "")
+                        tool_names[tcid] = name
+                        log.info("[req=%s] tool call -> %s", rid, name)
+                    elif etype == "TOOL_CALL_RESULT":
+                        tcid = getattr(e, "tool_call_id", "")
+                        content = getattr(e, "content", "") or ""
+                        preview = str(content).replace("\n", " ")[:120]
+                        log.info("[req=%s] tool result <- %s: %s", rid, tool_names.get(tcid, "?"), preview)
+                    elif etype == "RUN_ERROR":
+                        log.error("[req=%s] RUN_ERROR: %s", rid, getattr(e, "message", e))
+                    elif etype == "RUN_FINISHED":
+                        total = sum(text_len.values())
+                        log.info(
+                            "[req=%s] run finished in %.2fs events=%d text_chars=%d tools=%d",
+                            rid, time.time() - _t_run, n_events, total, len(tool_names),
+                        )
+
                     yield encoder.encode(e)
             except Exception as exc:
                 msg = str(exc)
                 if "not in request.tools" in msg or "tool call validation" in msg.lower():
+                    log.warning("[req=%s] stale-tool history, surfacing reset message", rid)
                     # Old conversation history references a removed tool, so surface a clean error
                     from ag_ui.core import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, RunFinishedEvent
                     import time as _time
@@ -366,6 +481,7 @@ else:
                     ]:
                         yield encoder.encode(ev)
                 else:
+                    log.exception("[req=%s] agent run crashed after %d events: %r", rid, n_events, exc)
                     raise
 
         encoder = EventEncoder(accept=request.headers.get("accept"))
@@ -414,6 +530,59 @@ async def get_me(request: Request):
         "picture": user.get("picture", ""),
         "providers": providers,
     }
+
+
+@app.get("/connection-status")
+async def connection_status(request: Request):
+    """Live health of each linked mailbox. Being in `providers` only means the
+    account was linked once; the OAuth token can still be expired (invalid_grant).
+    We probe by forcing a refresh with the stored refresh token, so the UI can
+    show "Connected" vs "Reconnect needed" accurately instead of always-connected."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    doc = db["users"].find_one(
+        {"_id": ObjectId(user["id"])},
+        {"providers": 1, "google_refresh_token": 1, "microsoft_refresh_token": 1},
+    )
+    if not doc:
+        return {}
+    providers = doc.get("providers", [])
+    status: dict[str, str] = {}
+
+    if "google" in providers:
+        if doc.get("google_refresh_token"):
+            try:
+                stored = decrypt_payload(doc["google_refresh_token"])["token"]
+                minimal = {
+                    "token": "", "refresh_token": stored,
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                    "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                    "scopes": ["https://mail.google.com/"],
+                    "expiry": "2000-01-01T00:00:00Z",
+                }
+                await refresh_google_token_if_needed(minimal)
+                status["google"] = "connected"
+            except Exception as e:
+                log.info("connection-status: google expired (%r)", e)
+                status["google"] = "expired"
+        else:
+            status["google"] = "expired"
+
+    if "microsoft" in providers:
+        if doc.get("microsoft_refresh_token"):
+            try:
+                stored = decrypt_payload(doc["microsoft_refresh_token"])["token"]
+                await refresh_microsoft_token_if_needed({"refresh_token": stored, "expires_at": 0})
+                status["microsoft"] = "connected"
+            except Exception as e:
+                log.info("connection-status: microsoft expired (%r)", e)
+                status["microsoft"] = "expired"
+        else:
+            status["microsoft"] = "expired"
+
+    return status
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -866,6 +1035,14 @@ async def delete_thread(thread_id: str, request: Request):
     return {"ok": True}
 
 
+# Tool calls that are internal mechanics, not user-facing actions, so they are
+# never rendered in the chat history (mirrors HIDDEN_TOOLS in the frontend).
+_HIDDEN_TOOL_NAMES = {
+    "recall_user_context", "remember_user_fact",
+    "search_tools", "load_tools", "unload_tools",
+}
+
+
 @app.get("/threads/{thread_id}/messages")
 async def get_thread_messages(thread_id: str, request: Request):
     user = request.session.get("user")
@@ -888,17 +1065,27 @@ async def get_thread_messages(thread_id: str, request: Request):
         tool_results: dict[str, str] = {}
         for msg in messages:
             if isinstance(msg, ToolMessage):
-                tool_results[msg.tool_call_id] = str(msg.content)[:500]
+                tool_results[msg.tool_call_id] = content_to_text(msg.content)[:500]
 
         result = []
         for msg in messages:
             if isinstance(msg, HumanMessage):
-                result.append({"id": str(msg.id), "role": "user", "content": str(msg.content)})
+                result.append({"id": str(msg.id), "role": "user", "content": content_to_text(msg.content)})
             elif isinstance(msg, AIMessage) and msg.tool_calls:
-                # Suppress the AIMessage itself
-                result.append({"id": str(msg.id), "role": "_suppress", "content": ""})
-                # One renderable entry per tool call (id = tool_call_id, used by CopilotKit)
+                # An AIMessage can carry BOTH a text line and tool calls (the
+                # PROGRESS UPDATES prompt makes the model say "Checking your inbox
+                # now." then call a tool in the same message). Render that text
+                # first so it survives a thread reload, then the tool-call cards.
+                text = content_to_text(msg.content)
+                if text.strip():
+                    result.append({"id": str(msg.id), "role": "assistant", "content": text})
+                else:
+                    result.append({"id": str(msg.id), "role": "_suppress", "content": ""})
+                # One renderable entry per tool call (id = tool_call_id, used by CopilotKit).
+                # Skip the deferred-loading plumbing tools, which are internal mechanics.
                 for tc in msg.tool_calls:
+                    if tc["name"] in _HIDDEN_TOOL_NAMES:
+                        continue
                     result.append({
                         "id": tc["id"],
                         "role": "tool_call",
@@ -907,7 +1094,11 @@ async def get_thread_messages(thread_id: str, request: Request):
                         "result": tool_results.get(tc["id"], ""),
                     })
             elif isinstance(msg, AIMessage) and msg.content:
-                result.append({"id": str(msg.id), "role": "assistant", "content": str(msg.content)})
+                text = content_to_text(msg.content)
+                if text.strip():
+                    result.append({"id": str(msg.id), "role": "assistant", "content": text})
+                else:
+                    result.append({"id": str(msg.id), "role": "_suppress", "content": ""})
             elif isinstance(msg, ToolMessage):
                 # Suppress ToolMessage since the result is already embedded in the tool_call entry
                 result.append({"id": str(msg.id), "role": "_suppress", "content": ""})

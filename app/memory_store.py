@@ -18,6 +18,9 @@ import hashlib
 from dotenv import load_dotenv
 
 from app.llm_errors import classify_provider_error
+from app.logging_config import get_logger
+
+log = get_logger("memory")
 
 load_dotenv()
 
@@ -101,29 +104,27 @@ def _get_memory(provider=None, api_key=None):
 
     # The shared default needs the owner's Gemini key; BYOK needs the user's.
     if provider in (None, "google") and not (api_key or os.getenv("GOOGLE_API_KEY")):
-        print("[MEMORY] no Google key available; semantic memory disabled")
+        log.warning("no Google key available; semantic memory disabled")
         _failed_configs.add(key_hash)
         return None
     if provider not in (None, "google") and not api_key:
-        print(f"[MEMORY] no api key for provider {provider}; skipping")
+        log.warning("no api key for provider %s; skipping", provider)
         _failed_configs.add(key_hash)
         return None
     if not os.getenv("MONGO_DB_URL"):
-        print("[MEMORY] MONGO_DB_URL not set; semantic memory disabled")
+        log.warning("MONGO_DB_URL not set; semantic memory disabled")
         _failed_configs.add(key_hash)
         return None
 
     try:
-        print(f"[MEMORY] initializing mem0 (provider={provider or 'shared-gemini'})…")
+        log.info("initializing mem0 (provider=%s)", provider or "shared-gemini")
         from mem0 import Memory
         mem = Memory.from_config(_build_config(provider, api_key))
         _memory_cache[key_hash] = mem
-        print("[MEMORY] mem0 initialized successfully")
+        log.info("mem0 initialized successfully")
         return mem
     except Exception as e:
-        import traceback
-        print(f"[MEMORY] init failed, this config disabled: {e!r}")
-        traceback.print_exc()
+        log.exception("mem0 init failed, this config disabled: %r", e)
         _failed_configs.add(key_hash)
         return None
 
@@ -147,7 +148,7 @@ def remember(user_id: str, text: str, *, provider=None, api_key=None) -> str:
         return "Memory is not configured, nothing was saved."
     try:
         result = mem.add(text, user_id=user_id)
-        print(f"[MEMORY] remember(user={user_id}) -> {result}")
+        log.info("remember(user=%s) -> %s", user_id, result)
         # mem0 returns an empty results list when the extraction step stored
         # nothing (no durable fact found, or the extraction LLM failed). Never
         # claim success in that case.
@@ -156,9 +157,7 @@ def remember(user_id: str, text: str, *, provider=None, api_key=None) -> str:
             return "Saved to memory."
         return "I didn't find a durable fact worth saving in that, so nothing was stored."
     except Exception as e:
-        import traceback
-        print(f"[MEMORY] remember failed: {e!r}")
-        traceback.print_exc()
+        log.exception("remember failed: %r", e)
         return _failure_note(e, "save that to memory")
 
 
@@ -180,9 +179,7 @@ def list_memories(user_id: str, *, provider=None, api_key=None) -> list:
                 })
         return out
     except Exception as e:
-        import traceback
-        print(f"[MEMORY] list failed: {e!r}")
-        traceback.print_exc()
+        log.exception("list failed: %r", e)
         return []
 
 
@@ -195,7 +192,7 @@ def delete_memory(memory_id: str, *, provider=None, api_key=None) -> bool:
         mem.delete(memory_id=memory_id)
         return True
     except Exception as e:
-        print(f"[MEMORY] delete failed: {e!r}")
+        log.warning("delete failed: %r", e)
         return False
 
 
@@ -208,7 +205,7 @@ def clear_memories(user_id: str, *, provider=None, api_key=None) -> bool:
         mem.delete_all(user_id=user_id)
         return True
     except Exception as e:
-        print(f"[MEMORY] clear failed: {e!r}")
+        log.warning("clear failed: %r", e)
         return False
 
 
@@ -224,17 +221,18 @@ def forget(user_id: str, query: str, *, provider=None, api_key=None) -> str:
             return "I couldn't find a matching memory to remove."
         top = items[0]
         mem.delete(memory_id=top["id"])
-        print(f"[MEMORY] forget(user={user_id}, query={query!r}) -> removed {top.get('id')}")
+        log.info("forget(user=%s, query=%r) -> removed %s", user_id, query, top.get("id"))
         return f"Removed from memory: {top.get('memory', '')}"
     except Exception as e:
-        import traceback
-        print(f"[MEMORY] forget failed: {e!r}")
-        traceback.print_exc()
+        log.exception("forget failed: %r", e)
         return _failure_note(e, "remove that from memory")
 
 
 def recall(user_id: str, query: str, limit: int = 5, *, provider=None, api_key=None) -> str:
-    """Search the user's memories. Returns a newline-joined list or an empty note."""
+    """Search the user's memories for this query. Returns a newline-joined list
+    or an empty string. Queried fresh every call: a previous cache keyed only on
+    user_id returned the first query's facts for every later message and could
+    serve just-deleted facts, so it was removed."""
     mem = _get_memory(provider, api_key)
     if mem is None:
         return ""
@@ -242,10 +240,8 @@ def recall(user_id: str, query: str, limit: int = 5, *, provider=None, api_key=N
         res = mem.search(query, filters={"user_id": user_id}, limit=limit)
         items = res.get("results", res) if isinstance(res, dict) else res
         facts = [it.get("memory", "") for it in items if it.get("memory")]
-        print(f"[MEMORY] recall(user={user_id}, query={query!r}) -> {len(facts)} facts")
+        log.info("recall(user=%s, query=%r) -> %d facts", user_id, query, len(facts))
         return "\n".join(f"- {f}" for f in facts)
     except Exception as e:
-        import traceback
-        print(f"[MEMORY] recall failed: {e!r}")
-        traceback.print_exc()
+        log.exception("recall failed: %r", e)
         return ""

@@ -12,6 +12,10 @@ const TOOL_META: Record<string, { label: string; pendingLabel: string; successLa
   schedule_recurring_email: { label: "Schedule Recurring Email", pendingLabel: "Scheduling…", successLabel: "Scheduled" },
   remember_user_fact:       { label: "Remember",                 pendingLabel: "Saving…",     successLabel: "Remembered" },
   recall_user_context:      { label: "Recall Memory",            pendingLabel: "Recalling…",  successLabel: "Recalled" },
+  forget_memory:            { label: "Forget",                   pendingLabel: "Removing…",   successLabel: "Removed" },
+  get_current_time:         { label: "Check Time",               pendingLabel: "Checking…",   successLabel: "Checked" },
+  convert_time:             { label: "Convert Time Zone",        pendingLabel: "Converting…", successLabel: "Converted" },
+  web_search:               { label: "Web Search",               pendingLabel: "Searching…",  successLabel: "Found" },
 };
 
 const CONFIRM_LABELS: Record<string, { confirm: string; danger?: boolean }> = {
@@ -76,7 +80,13 @@ function ApprovalButtons({ tool, resolve }: { tool: string; resolve: (r: any) =>
 // Background personalization tools run silently. They're logged on the backend
 // ([MEMORY] lines) but never shown as cards in chat, since recall now fires
 // before every task and would otherwise clutter the conversation.
-export const HIDDEN_TOOLS = new Set(["recall_user_context", "remember_user_fact"]);
+// search_tools/load_tools/unload_tools are the deferred-loading plumbing: the
+// model uses them to pull tool schemas on demand (to save tokens), but they are
+// internal mechanics, not user-facing actions, so they stay hidden too.
+export const HIDDEN_TOOLS = new Set([
+  "recall_user_context", "remember_user_fact",
+  "search_tools", "load_tools", "unload_tools",
+]);
 
 export default function ToolCallRenderer({ name, status, args, result }: Props) {
   const { pending } = useInterruptContext();
@@ -85,7 +95,7 @@ export default function ToolCallRenderer({ name, status, args, result }: Props) 
   // The approval buttons attach to the live card awaiting approval. We key off
   // `result` rather than `status`: when the graph pauses at the interrupt, the
   // tool-call args finish streaming so CopilotKit flips status to "complete"
-  // even though the tool never ran — but a paused tool has NO result yet, while
+  // even though the tool never ran. A paused tool has NO result yet, while
   // every historical card does. So "matches pending tool AND has no result" is
   // the precise, flicker-free signal.
   const showApproval = !!pending && pending.tool === name && !result;

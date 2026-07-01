@@ -39,3 +39,4 @@ google-genai==2.8.0
 langchain-google-genai==4.2.4
 langchain-openai==1.2.2
 langchain-anthropic==1.4.4
+ddgs==9.14.4

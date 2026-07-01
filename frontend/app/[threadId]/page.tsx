@@ -12,6 +12,7 @@ import ToolCallRenderer, { HIDDEN_TOOLS } from "../components/ToolCallRenderer";
 import SettingsModal from "../components/SettingsModal";
 import ApprovalInterrupt from "../components/ApprovalInterrupt";
 import { InterruptProvider } from "../components/InterruptContext";
+import BufferedInput from "../components/BufferedInput";
 
 function CustomAssistantMessage(props: any) {
   const content: string = props.message?.content ?? props.content ?? "";
@@ -452,6 +453,7 @@ export default function ThreadPage() {
             className="h-full"
             labels={{ title: "MailNet Assistant" }}
             Messages={MessagesWithHistory}
+            Input={BufferedInput}
             attachments={{
               enabled: true,
               onUpload: uploadAttachment,

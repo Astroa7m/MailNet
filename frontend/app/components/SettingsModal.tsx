@@ -255,6 +255,8 @@ export default function SettingsModal({
   const [prefs, setPrefs] = useState<Preferences>(DEFAULTS);
   const [original, setOriginal] = useState<Preferences>(DEFAULTS);
   const [providers, setProviders] = useState<string[]>(initialProviders);
+  // Live per-provider token health: "connected" | "expired" (undefined = unknown).
+  const [connStatus, setConnStatus] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
@@ -301,6 +303,14 @@ export default function SettingsModal({
         setPrefs(merged);
         setOriginal(merged);
         setProviders(meData.providers ?? []);
+
+        // Probe real token health in the background (it does live refreshes, so
+        // it is slower than /me). Badges update from "Connected" assumption to
+        // the true state once this resolves.
+        fetch(`${API}/connection-status`, { credentials: "include", cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : {}))
+          .then((cs) => setConnStatus(cs || {}))
+          .catch(() => {});
 
         const cp = keysData?.chat?.provider || "groq";
         const cm = keysData?.chat?.model || "";
@@ -636,6 +646,11 @@ export default function SettingsModal({
                   <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                     Pick a model that supports tool calling (e.g. GPT, Claude, Gemini, Llama 3.3, gpt-oss). Some models like Gemma can't reliably use tools, so actions and memory may not work.
                   </p>
+                  {!["groq", "google_genai"].includes(chatProvider) && !chatHasKey && !chatKeyInput.trim() && (
+                    <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-amber-600 dark:text-amber-500 leading-relaxed">
+                      No key added for this provider. We only host shared keys for Groq and Google, so chat will fall back to the shared Groq model until you add your own {chatProvider === "openai" ? "OpenAI" : chatProvider === "anthropic" ? "Anthropic" : "Ollama Cloud"} key above.
+                    </p>
+                  )}
 
                   <Field label="Smart Features" fieldKey="embed_provider">
                     <div className="flex items-center gap-2">
@@ -798,6 +813,45 @@ export default function SettingsModal({
               <div className={activeTab === "account" ? "" : "hidden"}>
                 <SectionHeader title="Account" />
                 <div>
+                  <Field label="Connected Accounts" fieldKey="connected_accounts">
+                    <div className="space-y-2">
+                      {(["google", "microsoft"] as const).map((p) => {
+                        const linked = providers.includes(p);
+                        // Real health once probed: "connected" | "expired".
+                        // Before the probe resolves, assume a linked account is ok.
+                        const health = connStatus[p] ?? (linked ? "connected" : "not_connected");
+                        const label = p === "google" ? "Google (Gmail)" : "Microsoft (Outlook)";
+                        const badge =
+                          health === "connected"
+                            ? { text: "Connected", cls: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400" }
+                            : health === "expired"
+                              ? { text: "Reconnect needed", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400" }
+                              : { text: "Not connected", cls: "bg-gray-100 text-gray-500 dark:bg-[#2a2a2a] dark:text-gray-400" };
+                        return (
+                          <div
+                            key={p}
+                            className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-[#2a2a2a]"
+                          >
+                            <span className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                              {label}
+                              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.cls}`}>
+                                {badge.text}
+                              </span>
+                            </span>
+                            <a
+                              href={`${API}/connect/${p}`}
+                              className="text-xs font-medium text-blue-500 hover:underline"
+                            >
+                              {linked ? "Reconnect" : "Connect"}
+                            </a>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 leading-relaxed">
+                      Reconnect if reading or sending stops working (an account's sign-in can expire). This re-authorizes that mailbox without signing you out.
+                    </p>
+                  </Field>
                   <Field label="Default Provider" fieldKey="default_provider">
                     {hasMultiple ? (
                       <select
