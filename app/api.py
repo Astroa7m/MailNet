@@ -310,6 +310,10 @@ else:
                         if hasattr(part, "text") and part.text:
                             title = part.text[:60].strip() or title
                             break
+            # The proactive "catch me up" briefing is a long fixed prompt; give it
+            # a clean sidebar title instead of the raw instruction text.
+            if title.startswith("Give me a quick briefing"):
+                title = "Inbox briefing"
             db["threads"].insert_one({
                 "thread_id": thread_id,
                 "user_id": user["id"],

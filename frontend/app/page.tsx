@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useSidebar } from "./components/SidebarContext";
 import SettingsModal from "./components/SettingsModal";
 import { API } from "./lib/api";
+import { BRIEFING_PROMPT } from "./lib/briefing";
 
 const SUGGESTIONS = [
   {
@@ -247,6 +248,16 @@ export default function Home() {
             <p className="text-sm text-gray-500 dark:text-gray-400">
               Your AI email assistant. What would you like to do?
             </p>
+            {/* Proactive briefing: the agent leads by triaging your inbox */}
+            <button
+              onClick={() => startConversation(BRIEFING_PROMPT)}
+              className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium shadow-lg shadow-blue-500/25 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Catch me up
+            </button>
           </div>
 
           {/* Composer input */}

@@ -13,6 +13,7 @@ import SettingsModal from "../components/SettingsModal";
 import ApprovalInterrupt from "../components/ApprovalInterrupt";
 import { InterruptProvider } from "../components/InterruptContext";
 import BufferedInput from "../components/BufferedInput";
+import { BRIEFING_PROMPT } from "../lib/briefing";
 
 function CustomAssistantMessage(props: any) {
   const content: string = props.message?.content ?? props.content ?? "";
@@ -206,6 +207,9 @@ function ConstrainedImageRenderer({ src, alt }: any) {
 function CustomUserMessage(props: any) {
   const content = props.message?.content ?? props.content ?? "";
   const { clean, attachments } = parseContent(content);
+  // The "Catch me up" briefing is a real message the agent acts on, but we hide
+  // its bubble so the agent appears to open the conversation on its own.
+  if (clean.trim() === BRIEFING_PROMPT) return null;
   return (
     <div style={{ display: "flex", justifyContent: "flex-end", width: "100%", padding: "2px 0" }}>
       <div style={USER_BUBBLE}>

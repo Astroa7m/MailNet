@@ -2,6 +2,7 @@
 import ToolCard from "./ToolCard";
 import EmailListCard from "./EmailListCard";
 import EmailActionCard from "./EmailActionCard";
+import SearchCard from "./SearchCard";
 import { useInterruptContext } from "./InterruptContext";
 
 const TOOL_META: Record<string, { label: string; pendingLabel: string; successLabel: string }> = {
@@ -105,6 +106,12 @@ export default function ToolCallRenderer({ name, status, args, result }: Props) 
 
   if (name === "read_emails" || name === "search_emails") {
     return <EmailListCard status={status} result={result} />;
+  }
+
+  // web_search gets the cinematic "scanning the web" treatment, the hero moment
+  // for the working-hours / company-lookup flow.
+  if (name === "web_search") {
+    return <SearchCard status={cardStatus} args={args} result={result} />;
   }
 
   let card: React.ReactNode;

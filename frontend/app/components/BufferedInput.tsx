@@ -52,9 +52,15 @@ export default function BufferedInput({
   }, []);
 
   const submit = useCallback(async () => {
-    const t = text.trim();
+    // Read the textarea's live DOM value, not just React `text` state. A
+    // programmatic fill (AutoSend for ?prompt= links / suggestion chips) sets
+    // .value and dispatches Enter before React's onChange has synced `text`, so
+    // reading state alone would send nothing. The DOM value is the source of
+    // truth and covers both typed and injected input.
+    const t = (textareaRef.current?.value ?? text).trim();
     if (!t) return;
     setText("");
+    if (textareaRef.current) textareaRef.current.value = "";
     requestAnimationFrame(autoresize);
     textareaRef.current?.focus();
 
@@ -113,7 +119,10 @@ export default function BufferedInput({
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !isComposing) {
               event.preventDefault();
-              if (text.trim().length > 0) submit();
+              // Gate on the live DOM value so a programmatic Enter (AutoSend)
+              // fires even before React `text` state has caught up.
+              const cur = (event.currentTarget.value ?? text).trim();
+              if (cur.length > 0) submit();
             }
           }}
           style={{ resize: "none" }}
