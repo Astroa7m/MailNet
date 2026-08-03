@@ -598,12 +598,32 @@ async def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
+def _oauth_redirect_uri(request: Request, name: str) -> str:
+    """Build the OAuth callback URL for the given route.
+
+    Behind a reverse proxy (e.g. on AWS) the request's scheme/host are the
+    internal ones, so request.url_for() yields an http:// internal URL that
+    Google/Azure reject. When PUBLIC_URL is set (the API's public origin, e.g.
+    https://api.example.com) we keep the resolved path but swap in the public
+    scheme + host so redirect_uri matches what's registered with the provider.
+    Locally PUBLIC_URL is unset and we fall back to url_for() unchanged.
+    """
+    uri = str(request.url_for(name))
+    public = os.getenv("PUBLIC_URL")
+    if public:
+        from urllib.parse import urlsplit, urlunsplit
+        pub = urlsplit(public)
+        parts = urlsplit(uri)
+        uri = urlunsplit((pub.scheme, pub.netloc, parts.path, parts.query, parts.fragment))
+    return uri
+
+
 # Google
 @app.get("/login/google")
 @limiter.limit("20/minute")
 async def login_google(request: Request):
     request.session["tz"] = request.query_params.get("tz", "UTC")
-    redirect_uri = request.url_for("auth_google")
+    redirect_uri = _oauth_redirect_uri(request, "auth_google")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -683,7 +703,7 @@ async def auth_google(request: Request):
 @limiter.limit("20/minute")
 async def login_microsoft(request: Request):
     request.session["tz"] = request.query_params.get("tz", "UTC")
-    redirect_uri = request.url_for("auth_microsoft")
+    redirect_uri = _oauth_redirect_uri(request, "auth_microsoft")
     return await oauth.microsoft.authorize_redirect(request, redirect_uri)
 
 
@@ -746,7 +766,7 @@ async def connect_google(request: Request):
     if not request.session.get("user"):
         raise HTTPException(status_code=401, detail="Not authenticated")
     request.session["connecting"] = True
-    redirect_uri = request.url_for("auth_google")
+    redirect_uri = _oauth_redirect_uri(request, "auth_google")
     return await oauth.google.authorize_redirect(request, redirect_uri, prompt="select_account consent")
 
 
@@ -755,7 +775,7 @@ async def connect_microsoft(request: Request):
     if not request.session.get("user"):
         raise HTTPException(status_code=401, detail="Not authenticated")
     request.session["connecting"] = True
-    redirect_uri = request.url_for("auth_microsoft")
+    redirect_uri = _oauth_redirect_uri(request, "auth_microsoft")
     return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
 
 

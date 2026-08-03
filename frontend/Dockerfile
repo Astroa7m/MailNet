@@ -3,6 +3,9 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN npm install -g pnpm && pnpm install --no-frozen-lockfile
 COPY . .
+# NEXT_PUBLIC_* must exist at build time to be baked into the client bundle.
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN pnpm build
 
 FROM node:20-alpine
