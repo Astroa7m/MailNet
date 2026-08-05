@@ -55,7 +55,7 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
     initialized.current = true;
     Promise.all([
       fetch(`${API}/me`, { credentials: "include" }).then(async (r) => {
-        if (r.status === 401) { window.location.href = `${API}/`; return; }
+        if (r.status === 401) { window.location.href = `${API}/login`; return; }
         const data = await r.json();
         setUser({ name: data.name || "", email: data.email || "", picture: data.picture || "", providers: data.providers || [] });
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
