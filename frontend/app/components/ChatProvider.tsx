@@ -38,6 +38,9 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const initialized = useRef(false);
+  // Stays true once we start redirecting to /login, so the app UI never
+  // flashes for logged-out visitors between the 401 and the navigation.
+  const redirecting = useRef(false);
   const router = useRouter();
   const pathname = usePathname();
   const currentThreadId = pathname === "/" ? null : pathname.slice(1);
@@ -55,14 +58,14 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
     initialized.current = true;
     Promise.all([
       fetch(`${API}/me`, { credentials: "include" }).then(async (r) => {
-        if (r.status === 401) { window.location.href = `${API}/login`; return; }
+        if (r.status === 401) { redirecting.current = true; window.location.href = `${API}/login`; return; }
         const data = await r.json();
         setUser({ name: data.name || "", email: data.email || "", picture: data.picture || "", providers: data.providers || [] });
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
         fetch(`${API}/tz`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tz }) }).catch(() => {});
       }),
       fetchThreads(),
-    ]).finally(() => setLoading(false));
+    ]).finally(() => { if (!redirecting.current) setLoading(false); });
   }, []);
 
   useEffect(() => {
