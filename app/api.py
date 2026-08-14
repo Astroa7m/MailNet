@@ -606,14 +606,14 @@ async def tester_request(request: Request, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=422, detail="Please enter a valid email address")
     existing = db["tester_requests"].find_one({"email": email})
     if existing:
-        return {"ok": True, "message": "You're already on the list — hang tight!"}
+        return {"ok": True, "message": "You're already on the list. Hang tight!"}
     db["tester_requests"].insert_one({
         "email": email,
         "status": "pending",
         "created_at": datetime.datetime.now(datetime.UTC),
     })
     background_tasks.add_task(_notify_admin_tester_request, email)
-    return {"ok": True, "message": "Request received — you'll get an email once you're added."}
+    return {"ok": True, "message": "Request received! You'll get an email once you're added."}
 
 
 @app.get("/tester-requests")

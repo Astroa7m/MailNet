@@ -387,7 +387,7 @@
             <span>Sign in with</span>
         </div>
 
-        <a href="/login/google" class="login-btn google-btn" onclick="appendTz(event)">
+        <a href="/login/google" class="login-btn google-btn" onclick="openGmailWarn(event)">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                 <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -412,6 +412,25 @@
             By continuing, you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
         </p>
     </div>
+    <div class="modal-overlay" id="gmailWarnModal" role="dialog" aria-modal="true" aria-labelledby="gmailWarnTitle">
+        <div class="modal">
+            <h2 id="gmailWarnTitle">Heads up: testers only for now</h2>
+            <p>
+                Gmail sign-in currently works only for approved testers while Google
+                verifies MailNet. If you've been added as a tester, continue below.
+            </p>
+            <p>
+                Not a tester yet? Request access and you'll usually be added within a
+                day. If you continue without being one, Google will show an
+                "app not verified" screen and block the sign-in.
+            </p>
+            <div class="modal-actions">
+                <button type="button" onclick="closeGmailWarn(); openTesterModal()">Request access</button>
+                <button type="button" class="primary" onclick="continueToGoogle()">I'm a tester, continue</button>
+            </div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="testerModal" role="dialog" aria-modal="true" aria-labelledby="testerTitle">
         <div class="modal">
             <h2 id="testerTitle">Request Gmail access</h2>
@@ -422,7 +441,7 @@
             </p>
             <p>
                 Until it completes, Google lets us onboard up to 100 testers manually.
-                Leave your Gmail address and you'll be added — usually within a day.
+                Leave your Gmail address and you'll be added, usually within a day.
                 One heads-up: Google signs testers out every 7 days, so you'll reconnect weekly.
             </p>
             <div class="status" id="testerStatus"></div>
@@ -444,13 +463,33 @@
         }
 
         const testerModal = document.getElementById("testerModal");
+        const gmailWarnModal = document.getElementById("gmailWarnModal");
+        let googleHref = null;
+
         function openTesterModal() {
             testerModal.classList.add("open");
             document.getElementById("testerEmail").focus();
         }
         function closeTesterModal() { testerModal.classList.remove("open"); }
+
+        function openGmailWarn(e) {
+            e.preventDefault();
+            googleHref = e.currentTarget.href;
+            gmailWarnModal.classList.add("open");
+        }
+        function closeGmailWarn() { gmailWarnModal.classList.remove("open"); }
+        function continueToGoogle() {
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const url = new URL(googleHref || "/login/google", window.location.origin);
+            url.searchParams.set("tz", tz);
+            window.location.href = url.toString();
+        }
+
         testerModal.addEventListener("click", (e) => { if (e.target === testerModal) closeTesterModal(); });
-        document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTesterModal(); });
+        gmailWarnModal.addEventListener("click", (e) => { if (e.target === gmailWarnModal) closeGmailWarn(); });
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") { closeTesterModal(); closeGmailWarn(); }
+        });
 
         async function submitTesterRequest() {
             const email = document.getElementById("testerEmail").value.trim();
@@ -475,14 +514,14 @@
                     status.className = "status ok";
                     document.getElementById("testerEmail").value = "";
                 } else if (r.status === 429) {
-                    status.textContent = "Too many requests from this connection — try again later.";
+                    status.textContent = "Too many requests from this connection. Try again later.";
                     status.className = "status err";
                 } else {
-                    status.textContent = data.detail || "Something went wrong — try again.";
+                    status.textContent = data.detail || "Something went wrong. Try again.";
                     status.className = "status err";
                 }
             } catch {
-                status.textContent = "Network error — try again.";
+                status.textContent = "Network error. Try again.";
                 status.className = "status err";
             } finally {
                 btn.disabled = false;
