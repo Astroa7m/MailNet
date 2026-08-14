@@ -2,6 +2,7 @@ import asyncio
 import base64
 import datetime
 import os
+import re
 import sys
 import time
 import uuid
@@ -16,7 +17,7 @@ import uvicorn
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -182,6 +183,9 @@ oauth.register(
             "https://www.googleapis.com/auth/gmail.labels",
             "https://www.googleapis.com/auth/gmail.modify",
         ]),
+        # OIDC metadata + token requests: authlib's default httpx timeout is
+        # 5s, which intermittently 500s logins on slow/jittery networks.
+        "timeout": 20,
     },
 )
 
@@ -201,6 +205,8 @@ oauth.register(
             "https://graph.microsoft.com/MailboxSettings.ReadWrite",
             "https://graph.microsoft.com/User.Read",
         ]),
+        # Same 5s-default-timeout fix as the google client above.
+        "timeout": 20,
     }
 )
 
@@ -431,6 +437,7 @@ else:
             # what the agent streamed and where it stopped if output is incomplete.
             text_len: dict = {}        # message_id -> chars streamed
             tool_names: dict = {}      # tool_call_id -> name
+            args_seen: set = set()     # tool_call_ids whose args deltas we logged
             n_events = 0
             try:
                 async for e in agent.run(filtered_input):
@@ -451,6 +458,11 @@ else:
                         tcid = getattr(e, "tool_call_id", "")
                         tool_names[tcid] = name
                         log.info("[req=%s] tool call -> %s", rid, name)
+                    elif etype == "TOOL_CALL_ARGS":
+                        tcid = getattr(e, "tool_call_id", "")
+                        if tcid not in args_seen:
+                            args_seen.add(tcid)
+                            log.info("[req=%s] tool args streaming for %s (first delta: %r)", rid, tool_names.get(tcid, "?"), str(getattr(e, "delta", ""))[:80])
                     elif etype == "TOOL_CALL_RESULT":
                         tcid = getattr(e, "tool_call_id", "")
                         content = getattr(e, "content", "") or ""
@@ -469,7 +481,7 @@ else:
             except Exception as exc:
                 msg = str(exc)
                 if "not in request.tools" in msg or "tool call validation" in msg.lower():
-                    log.warning("[req=%s] stale-tool history, surfacing reset message", rid)
+                    log.warning("[req=%s] stale-tool history, surfacing reset message: %s", rid, msg[:400])
                     # Old conversation history references a removed tool, so surface a clean error
                     from ag_ui.core import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, RunFinishedEvent
                     import time as _time
@@ -519,6 +531,101 @@ async def logout(request: Request):
 async def login_page_direct(request: Request):
     error = request.query_params.get("error")
     return templates.TemplateResponse("login.html", {"request": request, "error": error})
+
+
+# --- Gmail tester-access requests -------------------------------------------
+# While the app is in Google's testing mode, Gmail sign-in only works for
+# manually-added test users. Visitors ask for access via a form on the login
+# page; each request is stored in Mongo (source of truth) and a best-effort
+# notification email is sent to the admin using the admin's own stored Google
+# refresh token. ADMIN_EMAIL must be the admin user's google_email.
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def _notify_admin_tester_request(requester_email: str):
+    if not ADMIN_EMAIL:
+        log.warning("tester-request: ADMIN_EMAIL not set, skipping notification")
+        return
+    try:
+        admin = db["users"].find_one({"google_email": ADMIN_EMAIL})
+        if not admin or not admin.get("google_refresh_token"):
+            log.warning("tester-request: no stored admin refresh token, skipping email")
+            return
+        refresh_token = decrypt_payload(admin["google_refresh_token"])["token"]
+        token = {
+            "token": "",
+            "refresh_token": refresh_token,
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "scopes": ["https://mail.google.com/"],
+            # expiry in the past forces a refresh into a fresh access token
+            "expiry": "2000-01-01T00:00:00Z",
+        }
+        token = await refresh_google_token_if_needed(token)
+
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        mcp = MultiServerMCPClient({
+            "email_mcp": {
+                "transport": "streamable_http",
+                "url": os.getenv("MAILNET_SERVER_URL", "http://localhost:9111/mcp"),
+                "headers": {
+                    "redirect_uri": "http://localhost/",
+                    "default_provider": "google",
+                    "google_token": encrypt_payload(token),
+                },
+            }
+        })
+        tools = await mcp.get_tools()
+        send_tool = next((t for t in tools if t.name == "send_email"), None)
+        if not send_tool:
+            raise RuntimeError("send_email tool not found on MCP server")
+        await send_tool.ainvoke({
+            "to": ADMIN_EMAIL,
+            "subject": f"MailNet tester request: {requester_email}",
+            "body": (
+                f"{requester_email} asked for Gmail tester access.\n\n"
+                "Add them in Google Cloud Console -> OAuth consent screen -> "
+                "Test users, then let them know they're in."
+            ),
+        })
+        log.info("tester-request: notification sent for %s", requester_email)
+    except Exception as e:
+        # Never fail the request over the courtesy email; Mongo has the record.
+        log.warning("tester-request: notification failed for %s: %r", requester_email, e)
+
+
+@app.post("/tester-request")
+@limiter.limit("5/hour")
+async def tester_request(request: Request, background_tasks: BackgroundTasks):
+    data = await request.json()
+    email = (data.get("email") or "").strip().lower()
+    if not _EMAIL_RE.match(email) or len(email) > 254:
+        raise HTTPException(status_code=422, detail="Please enter a valid email address")
+    existing = db["tester_requests"].find_one({"email": email})
+    if existing:
+        return {"ok": True, "message": "You're already on the list — hang tight!"}
+    db["tester_requests"].insert_one({
+        "email": email,
+        "status": "pending",
+        "created_at": datetime.datetime.now(datetime.UTC),
+    })
+    background_tasks.add_task(_notify_admin_tester_request, email)
+    return {"ok": True, "message": "Request received — you'll get an email once you're added."}
+
+
+@app.get("/tester-requests")
+async def list_tester_requests(request: Request):
+    user = request.session.get("user")
+    if not user or not ADMIN_EMAIL or user.get("email") != ADMIN_EMAIL:
+        raise HTTPException(status_code=404, detail="Not found")
+    rows = list(db["tester_requests"].find({}, {"_id": 0}).sort("created_at", -1))
+    for r in rows:
+        if isinstance(r.get("created_at"), datetime.datetime):
+            r["created_at"] = r["created_at"].strftime("%Y-%m-%d %H:%M UTC")
+    return {"requests": rows, "count": len(rows)}
 
 
 @app.get("/me")

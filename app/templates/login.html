@@ -214,6 +214,102 @@
             font-size: 12px;
         }
 
+        /* Gmail tester-access badge + modal */
+        .beta-note {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            margin: 2px 0 6px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.45);
+        }
+        .beta-note button {
+            background: none;
+            border: none;
+            padding: 0;
+            font: inherit;
+            color: #8ab4f8;
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .beta-note button:hover { color: #aecbfa; }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 50;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal {
+            width: 100%;
+            max-width: 420px;
+            background: #14141c;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 28px;
+            text-align: left;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+        .modal h2 {
+            color: white;
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+        .modal p {
+            color: rgba(255, 255, 255, 0.55);
+            font-size: 13.5px;
+            line-height: 1.55;
+            margin-bottom: 12px;
+        }
+        .modal input {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-size: 14px;
+            margin-bottom: 12px;
+            outline: none;
+        }
+        .modal input:focus { border-color: rgba(66, 133, 244, 0.6); }
+        .modal .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        .modal .modal-actions button {
+            padding: 10px 18px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+        }
+        .modal .modal-actions .primary {
+            background: rgba(66, 133, 244, 0.9);
+            border-color: transparent;
+        }
+        .modal .modal-actions .primary:hover { background: #4285f4; }
+        .modal .modal-actions button:disabled { opacity: 0.5; cursor: default; }
+        .modal .status {
+            font-size: 13px;
+            margin-bottom: 10px;
+            display: none;
+        }
+        .modal .status.ok { display: block; color: #81c995; }
+        .modal .status.err { display: block; color: #f28b82; }
+
         .footer-text a {
             color: rgba(255, 255, 255, 0.7);
             text-decoration: none;
@@ -300,6 +396,10 @@
             </svg>
             Continue with Google
         </a>
+        <div class="beta-note">
+            <span>Gmail is invite-only while Google verifies MailNet.</span>
+            <button type="button" onclick="openTesterModal()">Request access</button>
+        </div>
 
         <a href="/login/microsoft" class="login-btn microsoft-btn" onclick="appendTz(event)">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -312,6 +412,28 @@
             By continuing, you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
         </p>
     </div>
+    <div class="modal-overlay" id="testerModal" role="dialog" aria-modal="true" aria-labelledby="testerTitle">
+        <div class="modal">
+            <h2 id="testerTitle">Request Gmail access</h2>
+            <p>
+                MailNet uses Gmail's most protected permissions, and Google requires a paid
+                security review before apps can open those to everyone. We're going through
+                that process now.
+            </p>
+            <p>
+                Until it completes, Google lets us onboard up to 100 testers manually.
+                Leave your Gmail address and you'll be added — usually within a day.
+                One heads-up: Google signs testers out every 7 days, so you'll reconnect weekly.
+            </p>
+            <div class="status" id="testerStatus"></div>
+            <input type="email" id="testerEmail" placeholder="you@gmail.com" autocomplete="email" />
+            <div class="modal-actions">
+                <button type="button" onclick="closeTesterModal()">Close</button>
+                <button type="button" class="primary" id="testerSubmit" onclick="submitTesterRequest()">Request access</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         function appendTz(e) {
             e.preventDefault();
@@ -319,6 +441,52 @@
             const url = new URL(e.currentTarget.href, window.location.origin);
             url.searchParams.set("tz", tz);
             window.location.href = url.toString();
+        }
+
+        const testerModal = document.getElementById("testerModal");
+        function openTesterModal() {
+            testerModal.classList.add("open");
+            document.getElementById("testerEmail").focus();
+        }
+        function closeTesterModal() { testerModal.classList.remove("open"); }
+        testerModal.addEventListener("click", (e) => { if (e.target === testerModal) closeTesterModal(); });
+        document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTesterModal(); });
+
+        async function submitTesterRequest() {
+            const email = document.getElementById("testerEmail").value.trim();
+            const status = document.getElementById("testerStatus");
+            const btn = document.getElementById("testerSubmit");
+            status.className = "status";
+            if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+                status.textContent = "Please enter a valid email address.";
+                status.className = "status err";
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const r = await fetch("/tester-request", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email }),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (r.ok && data.ok) {
+                    status.textContent = data.message;
+                    status.className = "status ok";
+                    document.getElementById("testerEmail").value = "";
+                } else if (r.status === 429) {
+                    status.textContent = "Too many requests from this connection — try again later.";
+                    status.className = "status err";
+                } else {
+                    status.textContent = data.detail || "Something went wrong — try again.";
+                    status.className = "status err";
+                }
+            } catch {
+                status.textContent = "Network error — try again.";
+                status.className = "status err";
+            } finally {
+                btn.disabled = false;
+            }
         }
     </script>
 </body>
