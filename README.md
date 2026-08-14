@@ -2,9 +2,11 @@
 
 **An agentic email assistant that reads, writes, schedules, and manages your inbox through natural conversation, across Gmail and Outlook, with a model you choose.**
 
+**Live at [getmailnet.com](https://getmailnet.com).** Microsoft sign-in is open to everyone; Gmail is invite-only while the app goes through Google's verification (request access from the login page).
+
 MailNet is a conversational agent built on LangGraph and the Model Context Protocol (MCP). You talk to it; it uses tools to act on your real mailbox. It remembers what matters about you, asks before doing anything destructive, and runs on whichever LLM you point it at, including a free shared key so it works the moment you sign in.
 
-> This is a portfolio project demonstrating agent architecture, not a hosted product. See [Status](#status).
+> This is a portfolio project demonstrating agent architecture. See [Status](#status).
 
 ---
 
@@ -17,6 +19,36 @@ MailNet is a conversational agent built on LangGraph and the Model Context Proto
 - **Scheduling.** One-off and recurring sends handled by a dedicated APScheduler service.
 - **Secure by construction.** OAuth for both providers, per-user sessions, encrypted tokens and BYOK keys at rest (Fernet), per-user data isolation, and rate limiting.
 - **Zero marginal cost.** The default stack runs entirely on free tiers (Groq, Gemini, MongoDB Atlas, Redis), gated behind real OAuth.
+- **Inbox intelligence.** A proactive "Catch me up" briefing that opens with the most urgent email, a triage card that classifies the inbox (needs action / FYI), and a live web-search card for questions that need the internet.
+- **Verifiable claims.** Terms and Privacy pages link to the exact source lines that encrypt tokens and keys; a Contribute tab in Settings points anyone at the code.
+
+---
+
+## Screenshots
+
+**Sign in** – flat, single-statement login. Gmail shows its invite-only state up front; a dialog explains Google's verification process and lets visitors request tester access.
+
+![Login](assets/login.png)
+
+**Home** – the assistant greets you and offers a proactive inbox briefing.
+
+![Home](assets/home.png)
+
+**Reading the inbox** – emails render as a card, not a wall of text.
+
+![Inbox](assets/inbox.png)
+
+**Triage** – one request classifies the inbox into needs-action and FYI with a reason per email.
+
+![Triage](assets/triage.png)
+
+**Human-in-the-loop approval** – sending pauses on an approval card with the full draft; nothing leaves without your click (unless you opt into auto-approve).
+
+![Approval](assets/approval.png)
+
+**Web search** – when a question needs the internet, results stream into a source card.
+
+![Search](assets/search.png)
 
 ---
 
@@ -142,8 +174,26 @@ MailNet runs as a multi-service Docker Compose stack.
 ### Prerequisites
 - Docker and Docker Compose
 - A MongoDB Atlas cluster with Vector Search enabled
-- Google and/or Microsoft OAuth app credentials
+- Google and/or Microsoft OAuth app credentials (setup below)
 - At least one LLM key (a free Groq key is enough to start)
+
+### Set up the Google OAuth app (Gmail)
+
+MailNet signs users in and reads mail through your own Google Cloud OAuth client:
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create a project, then open **APIs & Services -> Library** and enable the **Gmail API**.
+2. **APIs & Services -> OAuth consent screen**: External, fill in the app name and your support email, and add the scopes `openid`, `email`, `profile`, `https://mail.google.com/`, `gmail.send`, `gmail.labels`, `gmail.modify`. Keep the app in **Testing** mode and add your Google account under **Test users** (Gmail scopes are restricted; public access requires Google's paid verification).
+3. **APIs & Services -> Credentials -> Create credentials -> OAuth client ID**, type **Web application**. Add the redirect URI `http://localhost:8002/auth/google` (and `https://your-domain/auth/google` for production).
+4. Copy the client ID and secret into `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+
+### Set up the Azure app (Outlook)
+
+1. In the [Azure Portal](https://portal.azure.com), open **App registrations -> New registration**, supported account types: **Personal Microsoft accounts and organizational**.
+2. Under **Authentication**, add a **Web** platform with redirect URI `http://localhost:8002/auth/microsoft` (and your production equivalent).
+3. Under **API permissions**, add Microsoft Graph delegated permissions: `openid`, `email`, `profile`, `offline_access`, `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`.
+4. Under **Certificates & secrets**, create a client secret. Copy the application (client) ID and the secret value into `AZURE_APPLICATION_CLIENT_ID` / `AZURE_SECRET_VALUE`.
+
+A step-by-step Azure walkthrough with screenshots lives in the MCP server repo: [`azure_auth_guide.md`](https://github.com/Astroa7m/MailNet-MCP-Server/blob/main/azure_auth_guide.md).
 
 ### Configure
 Create a `.env` file at the repo root:
@@ -156,6 +206,12 @@ ENCRYPTION_KEY=...          # Fernet key
 SESSION_SECRET=...
 JWT_SECRET=...
 FRONTEND_URL=http://localhost:3000
+
+# Production only (public HTTPS deploys)
+# PUBLIC_URL=https://your-domain          # OAuth callbacks behind a reverse proxy
+# NEXT_PUBLIC_API_URL=https://your-domain # baked into the frontend at build time
+# ENVIRONMENT=production                  # secure session cookies
+# ADMIN_EMAIL=you@gmail.com               # receives Gmail tester-access requests
 
 # Shared LLM keys (used until a user adds their own)
 GROQ_API_KEY=...            # default chat
@@ -201,4 +257,6 @@ docker-compose.yml  redis · mcp · scheduler · api · frontend
 
 ## Status
 
-MailNet is a portfolio project built to demonstrate agentic application design: MCP plus LangGraph architecture, model-agnostic BYOK, semantic memory and retrieval, human-in-the-loop control, multi-provider OAuth, and a polished real-time chat UI. It is not a hosted or production-supported product.
+MailNet is a portfolio project built to demonstrate agentic application design: MCP plus LangGraph architecture, model-agnostic BYOK, semantic memory and retrieval, human-in-the-loop control, multi-provider OAuth, and a polished real-time chat UI.
+
+It is deployed at [getmailnet.com](https://getmailnet.com). Microsoft sign-in is open; Gmail is limited to invited testers while the app completes Google's verification for restricted Gmail scopes (you can request access from the login page). Terms and Privacy live at [/terms](https://getmailnet.com/terms) and [/privacy](https://getmailnet.com/privacy), and both link back to the exact source lines that implement what they claim.
