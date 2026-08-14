@@ -17,17 +17,21 @@
             justify-content: center;
             align-items: center;
             min-height: 100vh;
-            background: #0a0a0f;
+            background: #0a0c14;
             overflow: hidden;
             position: relative;
         }
 
-        /* Single quiet light source instead of decorative orbs */
+        /* Two-point lighting: a cool indigo key light from the top left and a
+           faint teal fill from the bottom right. Large, soft, unsaturated
+           fields read as light on the surface, not floating shapes. */
         body::before {
             content: '';
             position: absolute;
             inset: 0;
-            background: radial-gradient(ellipse 70% 50% at 50% -10%, rgba(91, 103, 234, 0.12), transparent 70%);
+            background:
+                radial-gradient(ellipse 95% 65% at 18% -12%, rgba(83, 99, 242, 0.22), transparent 62%),
+                radial-gradient(ellipse 75% 55% at 88% 112%, rgba(45, 180, 190, 0.11), transparent 60%);
             pointer-events: none;
         }
 
@@ -39,9 +43,12 @@
             width: 100%;
             height: 100%;
             background-image:
-                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+                linear-gradient(rgba(139, 152, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(139, 152, 255, 0.05) 1px, transparent 1px);
             background-size: 50px 50px;
+            /* grid only exists where the key light falls */
+            -webkit-mask-image: radial-gradient(ellipse 90% 70% at 25% 0%, black, transparent 75%);
+            mask-image: radial-gradient(ellipse 90% 70% at 25% 0%, black, transparent 75%);
             pointer-events: none;
         }
 
@@ -56,8 +63,14 @@
                 0 8px 32px rgba(0, 0, 0, 0.3),
                 inset 0 1px 0 rgba(255, 255, 255, 0.1);
             text-align: center;
-            min-width: 400px;
+            width: min(400px, calc(100vw - 32px));
             z-index: 10;
+        }
+
+        @media (max-width: 480px) {
+            .login-container { padding: 36px 22px; }
+            .logo-text { font-size: 26px; }
+            body { overflow-y: auto; }
         }
 
         /* Logo / Brand */
@@ -185,6 +198,97 @@
             margin-top: 30px;
             color: rgba(255, 255, 255, 0.4);
             font-size: 12px;
+        }
+
+        /* The agent at work behind the glass: ghost emails drift upward and,
+           one at a time, get quietly triaged (chip appears, row files away).
+           Everything stays near-invisible; the login card frosts whatever
+           passes behind it. Drift transform lives on .ghost-row, triage
+           effects on .row-inner, so the two never fight. */
+        .agent-stage {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .ghost-row {
+            position: absolute;
+            top: 105vh;
+            width: var(--w);
+            left: var(--x);
+            animation: rowDrift var(--dur) linear var(--delay) infinite;
+            will-change: transform, opacity;
+            opacity: 0;
+        }
+        @keyframes rowDrift {
+            0%   { transform: translateY(0); opacity: 0; }
+            6%   { opacity: 1; }
+            92%  { opacity: 1; }
+            100% { transform: translateY(-130vh); opacity: 0; }
+        }
+        .row-inner {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 11px 14px;
+            border: 1px solid rgba(139, 152, 255, 0.07);
+            border-radius: 10px;
+            background: rgba(139, 152, 255, 0.025);
+            position: relative;
+            transition: border-color 0.6s ease, background 0.6s ease,
+                        transform 0.9s cubic-bezier(0.5, 0, 0.7, 0.4), opacity 0.9s ease;
+        }
+        .row-inner .dot {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: rgba(139, 152, 255, 0.12);
+            flex: none;
+        }
+        .row-inner .bars { flex: 1; }
+        .row-inner .bar {
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(160, 172, 214, 0.10);
+            margin: 5px 0;
+        }
+        .row-inner .chip {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%) scale(0.9);
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            color: rgba(170, 183, 255, 0.9);
+            border: 1px solid rgba(139, 152, 255, 0.35);
+            background: rgba(83, 99, 242, 0.14);
+            padding: 2px 8px;
+            border-radius: 999px;
+            opacity: 0;
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+        .row-inner.zap {
+            border-color: rgba(139, 152, 255, 0.30);
+            background: rgba(83, 99, 242, 0.06);
+        }
+        .row-inner.zap .chip {
+            opacity: 1;
+            transform: translateY(-50%) scale(1);
+        }
+        .row-inner.zap .chip.teal {
+            color: rgba(150, 222, 224, 0.9);
+            border-color: rgba(64, 190, 196, 0.35);
+            background: rgba(45, 180, 190, 0.12);
+        }
+        .row-inner.done {
+            transform: translateX(70px);
+            opacity: 0;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .ghost-row { animation: none; opacity: 1; top: var(--static-top, 50vh); }
         }
 
         /* Gmail tester-access badge + modal */
@@ -327,6 +431,7 @@
 <body>
     <!-- Background elements -->
     <div class="grid-pattern"></div>
+    <div class="agent-stage" id="agentStage" aria-hidden="true"></div>
 
     <div class="login-container">
         <!-- Logo -->
@@ -424,6 +529,55 @@
     </div>
 
     <script>
+        // --- the agent at work: ghost inbox + quiet triage loop ---
+        (function () {
+            const stage = document.getElementById("agentStage");
+            const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            const CHIPS = [
+                { label: "Urgent", cls: "" },
+                { label: "Drafted", cls: "teal" },
+                { label: "Scheduled", cls: "" },
+                { label: "Filed", cls: "teal" },
+                { label: "FYI", cls: "teal" },
+            ];
+            const rows = [];
+            for (let i = 0; i < 9; i++) {
+                const row = document.createElement("div");
+                row.className = "ghost-row";
+                const dur = 55 + Math.random() * 35;
+                row.style.setProperty("--w", 250 + Math.round(Math.random() * 120) + "px");
+                row.style.setProperty("--x", Math.round(Math.random() * 78) + "%");
+                row.style.setProperty("--dur", dur.toFixed(1) + "s");
+                row.style.setProperty("--delay", (-Math.random() * dur).toFixed(1) + "s");
+                row.style.setProperty("--static-top", Math.round(5 + Math.random() * 85) + "vh");
+                const inner = document.createElement("div");
+                inner.className = "row-inner";
+                const bars = ['<div class="dot"></div><div class="bars">'];
+                bars.push('<div class="bar" style="width:' + (35 + Math.round(Math.random() * 40)) + '%"></div>');
+                bars.push('<div class="bar" style="width:' + (55 + Math.round(Math.random() * 40)) + '%"></div>');
+                bars.push('</div><span class="chip"></span>');
+                inner.innerHTML = bars.join("");
+                row.appendChild(inner);
+                stage.appendChild(row);
+                rows.push(inner);
+            }
+            if (reduced) return; // static ghost inbox only, no activity
+            function triageOne() {
+                const idle = rows.filter((r) => !r.classList.contains("zap"));
+                if (!idle.length) return;
+                const inner = idle[Math.floor(Math.random() * idle.length)];
+                const chip = CHIPS[Math.floor(Math.random() * CHIPS.length)];
+                const chipEl = inner.querySelector(".chip");
+                chipEl.textContent = chip.label;
+                chipEl.className = "chip " + chip.cls;
+                inner.classList.add("zap");
+                setTimeout(() => inner.classList.add("done"), 2400);
+                setTimeout(() => inner.classList.remove("zap", "done"), 4200);
+            }
+            setTimeout(triageOne, 1200);
+            setInterval(triageOne, 5600);
+        })();
+
         function appendTz(e) {
             e.preventDefault();
             const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
