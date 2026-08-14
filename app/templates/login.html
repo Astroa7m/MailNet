@@ -5,318 +5,146 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - MailNet</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #0a0a0b;
+            --surface: #111113;
+            --line: #232327;
+            --line-strong: #3a3a41;
+            --text: #f4f4f5;
+            --muted: #8b8b94;
+            --faint: #64646c;
+            --accent: #8b95ff;
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
-            background: #0a0c14;
-            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-font-smoothing: antialiased;
             position: relative;
+            overflow-x: hidden;
         }
 
-        /* Two-point lighting: a cool indigo key light from the top left and a
-           faint teal fill from the bottom right. Large, soft, unsaturated
-           fields read as light on the surface, not floating shapes. */
+        /* color as light, not shapes: an indigo wash from the upper left,
+           a faint teal answer from the lower right */
         body::before {
             content: '';
-            position: absolute;
+            position: fixed;
             inset: 0;
             background:
-                radial-gradient(ellipse 95% 65% at 18% -12%, rgba(83, 99, 242, 0.22), transparent 62%),
-                radial-gradient(ellipse 75% 55% at 88% 112%, rgba(45, 180, 190, 0.11), transparent 60%);
+                radial-gradient(ellipse 85% 70% at 12% -8%, rgba(99, 110, 250, 0.26), transparent 60%),
+                radial-gradient(ellipse 75% 60% at 95% 108%, rgba(45, 190, 200, 0.16), transparent 58%);
             pointer-events: none;
         }
+        .shell, .modal-overlay { position: relative; z-index: 1; }
 
-        /* Grid pattern overlay */
-        .grid-pattern {
-            position: absolute;
-            top: 0;
-            left: 0;
+        .shell {
             width: 100%;
-            height: 100%;
-            background-image:
-                linear-gradient(rgba(139, 152, 255, 0.05) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(139, 152, 255, 0.05) 1px, transparent 1px);
-            background-size: 50px 50px;
-            /* grid only exists where the key light falls */
-            -webkit-mask-image: radial-gradient(ellipse 90% 70% at 25% 0%, black, transparent 75%);
-            mask-image: radial-gradient(ellipse 90% 70% at 25% 0%, black, transparent 75%);
-            pointer-events: none;
+            max-width: 400px;
+            padding: 40px 28px;
         }
 
-        .login-container {
-            position: relative;
-            background: rgba(20, 20, 30, 0.6);
-            backdrop-filter: blur(20px);
-            padding: 50px 40px;
-            border-radius: 24px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            box-shadow:
-                0 8px 32px rgba(0, 0, 0, 0.3),
-                inset 0 1px 0 rgba(255, 255, 255, 0.1);
-            text-align: center;
-            width: min(400px, calc(100vw - 32px));
-            z-index: 10;
-        }
-
-        @media (max-width: 480px) {
-            .login-container { padding: 36px 22px; }
-            .logo-text { font-size: 26px; }
-            body { overflow-y: auto; }
-        }
-
-        /* Logo / Brand */
-        .logo {
+        .brand {
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 12px;
-            margin-bottom: 10px;
+            gap: 9px;
+            margin-bottom: 40px;
+        }
+        .brand svg { width: 20px; height: 20px; }
+        .brand span {
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
         }
 
-        .logo-icon {
-            width: 48px;
-            height: 48px;
-            background: #4f5ce8;
-            border-radius: 12px;
+        h1 {
+            font-size: clamp(30px, 8vw, 38px);
+            font-weight: 650;
+            letter-spacing: -0.03em;
+            line-height: 1.08;
+            text-wrap: balance;
+            margin-bottom: 14px;
+        }
+
+        .sub {
+            font-size: 15px;
+            line-height: 1.55;
+            color: var(--muted);
+            margin-bottom: 36px;
+        }
+
+        .error-banner {
             display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .logo-icon svg {
-            width: 28px;
-            height: 28px;
-        }
-
-        .logo-text {
-            font-size: 32px;
-            font-weight: 700;
-            color: #ffffff;
-            letter-spacing: -0.5px;
-        }
-
-        .tagline {
-            color: rgba(255, 255, 255, 0.6);
-            font-size: 14px;
-            margin-bottom: 35px;
-            font-weight: 400;
-        }
-
-        .divider {
-            display: flex;
-            align-items: center;
-            margin: 25px 0;
-            color: rgba(255, 255, 255, 0.3);
+            gap: 10px;
+            align-items: flex-start;
+            border: 1px solid #46262b;
+            background: #150f10;
+            border-radius: 8px;
+            padding: 12px 14px;
+            margin-bottom: 24px;
             font-size: 13px;
+            line-height: 1.5;
+            color: #e8a7a7;
         }
+        .error-banner svg { flex: none; margin-top: 2px; }
+        .error-banner strong { display: block; color: #f4baba; }
 
-        .divider::before,
-        .divider::after {
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: rgba(255, 255, 255, 0.1);
-        }
-
-        .divider span {
-            padding: 0 15px;
-        }
+        .auth { display: grid; gap: 10px; }
 
         .login-btn {
             display: flex;
             align-items: center;
-            justify-content: center;
+            gap: 12px;
             width: 100%;
-            padding: 14px 20px;
-            margin: 8px 0;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
-            font-size: 15px;
+            padding: 13px 16px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text);
+            font-size: 14.5px;
             font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
             text-decoration: none;
-            background: rgba(255, 255, 255, 0.05);
-            color: white;
-            position: relative;
-            overflow: hidden;
+            cursor: pointer;
+            transition: border-color 0.15s ease, background 0.15s ease;
         }
-
-        .login-btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-            transition: left 0.5s ease;
-        }
-
-        .login-btn:hover::before {
-            left: 100%;
-        }
-
         .login-btn:hover {
-            transform: translateY(-2px);
-            border-color: rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.08);
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
+            border-color: var(--line-strong);
+            background: var(--surface);
+        }
+        .login-btn svg { width: 18px; height: 18px; flex: none; }
+        .login-btn .invite {
+            margin-left: auto;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--accent);
+            letter-spacing: 0.02em;
         }
 
-        .login-btn:active {
-            transform: translateY(0);
+        .foot {
+            margin-top: 36px;
+            font-size: 12.5px;
+            color: var(--faint);
+            line-height: 1.6;
         }
+        .foot a {
+            color: var(--faint);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .foot a:hover { color: var(--muted); }
 
-        .google-btn:hover {
-            border-color: rgba(66, 133, 244, 0.5);
-            background: rgba(66, 133, 244, 0.1);
-        }
-
-        .microsoft-btn:hover {
-            border-color: rgba(0, 164, 239, 0.5);
-            background: rgba(0, 164, 239, 0.1);
-        }
-
-        .login-btn img,
-        .login-btn svg {
-            width: 22px;
-            height: 22px;
-            margin-right: 12px;
-        }
-
-        .footer-text {
-            margin-top: 30px;
-            color: rgba(255, 255, 255, 0.4);
-            font-size: 12px;
-        }
-
-        /* The agent at work behind the glass: ghost emails drift upward and,
-           one at a time, get quietly triaged (chip appears, row files away).
-           Everything stays near-invisible; the login card frosts whatever
-           passes behind it. Drift transform lives on .ghost-row, triage
-           effects on .row-inner, so the two never fight. */
-        .agent-stage {
-            position: absolute;
-            inset: 0;
-            overflow: hidden;
-            pointer-events: none;
-            z-index: 1;
-        }
-        .ghost-row {
-            position: absolute;
-            top: 105vh;
-            width: var(--w);
-            left: var(--x);
-            animation: rowDrift var(--dur) linear var(--delay) infinite;
-            will-change: transform, opacity;
-            opacity: 0;
-        }
-        @keyframes rowDrift {
-            0%   { transform: translateY(0); opacity: 0; }
-            6%   { opacity: 1; }
-            92%  { opacity: 1; }
-            100% { transform: translateY(-130vh); opacity: 0; }
-        }
-        .row-inner {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 11px 14px;
-            border: 1px solid rgba(139, 152, 255, 0.07);
-            border-radius: 10px;
-            background: rgba(139, 152, 255, 0.025);
-            position: relative;
-            transition: border-color 0.6s ease, background 0.6s ease,
-                        transform 0.9s cubic-bezier(0.5, 0, 0.7, 0.4), opacity 0.9s ease;
-        }
-        .row-inner .dot {
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            background: rgba(139, 152, 255, 0.12);
-            flex: none;
-        }
-        .row-inner .bars { flex: 1; }
-        .row-inner .bar {
-            height: 6px;
-            border-radius: 3px;
-            background: rgba(160, 172, 214, 0.10);
-            margin: 5px 0;
-        }
-        .row-inner .chip {
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-50%) scale(0.9);
-            font-size: 9px;
-            font-weight: 600;
-            letter-spacing: 0.09em;
-            text-transform: uppercase;
-            color: rgba(170, 183, 255, 0.9);
-            border: 1px solid rgba(139, 152, 255, 0.35);
-            background: rgba(83, 99, 242, 0.14);
-            padding: 2px 8px;
-            border-radius: 999px;
-            opacity: 0;
-            transition: opacity 0.5s ease, transform 0.5s ease;
-        }
-        .row-inner.zap {
-            border-color: rgba(139, 152, 255, 0.30);
-            background: rgba(83, 99, 242, 0.06);
-        }
-        .row-inner.zap .chip {
-            opacity: 1;
-            transform: translateY(-50%) scale(1);
-        }
-        .row-inner.zap .chip.teal {
-            color: rgba(150, 222, 224, 0.9);
-            border-color: rgba(64, 190, 196, 0.35);
-            background: rgba(45, 180, 190, 0.12);
-        }
-        .row-inner.done {
-            transform: translateX(70px);
-            opacity: 0;
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .ghost-row { animation: none; opacity: 1; top: var(--static-top, 50vh); }
-        }
-
-        /* Gmail invite-only pill inside the Google button */
-        .google-wrap { position: relative; }
-        .invite-pill {
-            position: absolute;
-            right: 10px;
-            top: -1px;
-            z-index: 2;
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            color: rgba(178, 190, 255, 0.95);
-            border: 1px solid rgba(139, 152, 255, 0.35);
-            background: #14141f;
-            padding: 3px 9px;
-            border-radius: 999px;
-            pointer-events: none;
-            line-height: 1.2;
-        }
-
+        /* modals */
         .modal-overlay {
             display: none;
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(4px);
+            background: rgba(0, 0, 0, 0.72);
             z-index: 50;
             align-items: center;
             justify-content: center;
@@ -326,128 +154,83 @@
         .modal {
             width: 100%;
             max-width: 420px;
-            background: #14141c;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
-            padding: 28px;
-            text-align: left;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            background: #0e0e10;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 26px;
         }
         .modal h2 {
-            color: white;
-            font-size: 18px;
-            margin-bottom: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+            margin-bottom: 12px;
         }
         .modal p {
-            color: rgba(255, 255, 255, 0.55);
             font-size: 13.5px;
-            line-height: 1.55;
+            line-height: 1.6;
+            color: var(--muted);
             margin-bottom: 12px;
         }
         .modal input {
             width: 100%;
-            padding: 12px 14px;
-            border-radius: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            background: rgba(255, 255, 255, 0.05);
-            color: white;
+            padding: 11px 13px;
+            border-radius: 7px;
+            border: 1px solid var(--line);
+            background: var(--bg);
+            color: var(--text);
             font-size: 14px;
-            margin-bottom: 12px;
+            margin-bottom: 14px;
             outline: none;
         }
-        .modal input:focus { border-color: rgba(66, 133, 244, 0.6); }
-        .modal .modal-actions {
+        .modal input:focus { border-color: var(--line-strong); }
+        .modal-actions {
             display: flex;
-            gap: 10px;
+            gap: 8px;
             justify-content: flex-end;
         }
-        .modal .modal-actions button {
-            padding: 10px 18px;
-            border-radius: 10px;
-            font-size: 14px;
+        .modal-actions button {
+            padding: 9px 16px;
+            border-radius: 7px;
+            font-size: 13.5px;
             font-weight: 500;
             cursor: pointer;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.05);
-            color: white;
+            border: 1px solid var(--line);
+            background: transparent;
+            color: var(--text);
+            transition: border-color 0.15s ease, background 0.15s ease;
         }
-        .modal .modal-actions .primary {
-            background: rgba(66, 133, 244, 0.9);
-            border-color: transparent;
+        .modal-actions button:hover { border-color: var(--line-strong); }
+        .modal-actions .primary {
+            background: var(--text);
+            border-color: var(--text);
+            color: #0a0a0b;
         }
-        .modal .modal-actions .primary:hover { background: #4285f4; }
-        .modal .modal-actions button:disabled { opacity: 0.5; cursor: default; }
-        .modal .status {
-            font-size: 13px;
-            margin-bottom: 10px;
-            display: none;
-        }
-        .modal .status.ok { display: block; color: #81c995; }
-        .modal .status.err { display: block; color: #f28b82; }
+        .modal-actions .primary:hover { background: #ffffff; }
+        .modal-actions button:disabled { opacity: 0.5; cursor: default; }
+        .status { font-size: 13px; margin-bottom: 10px; display: none; }
+        .status.ok { display: block; color: #86d6a4; }
+        .status.err { display: block; color: #e8a7a7; }
 
-        .footer-text a {
-            color: rgba(255, 255, 255, 0.7);
-            text-decoration: none;
-            transition: color 0.3s ease;
-        }
-
-        .footer-text a:hover {
-            color: white;
-        }
-
-        .error-banner {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            background: rgba(239, 68, 68, 0.12);
-            border: 1px solid rgba(239, 68, 68, 0.35);
-            border-radius: 10px;
-            padding: 12px 14px;
-            margin-bottom: 20px;
-            text-align: left;
-        }
-
-        .error-banner svg {
-            flex-shrink: 0;
-            margin-top: 1px;
-        }
-
-        .error-banner p {
-            color: rgba(255, 180, 180, 0.95);
-            font-size: 13px;
-            line-height: 1.5;
-        }
-
-        .error-banner strong {
-            display: block;
-            color: #fca5a5;
-            font-size: 13.5px;
-            margin-bottom: 2px;
-        }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+        ::selection { background: rgba(139, 149, 255, 0.3); }
     </style>
 </head>
 <body>
-    <!-- Background elements -->
-    <div class="grid-pattern"></div>
-    <div class="agent-stage" id="agentStage" aria-hidden="true"></div>
-
-    <div class="login-container">
-        <!-- Logo -->
-        <div class="logo">
-            <div class="logo-icon">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M3 8L10.89 13.26C11.2187 13.4793 11.6049 13.5963 12 13.5963C12.3951 13.5963 12.7813 13.4793 13.11 13.26L21 8M5 19H19C19.5304 19 20.0391 18.7893 20.4142 18.4142C20.7893 18.0391 21 17.5304 21 17V7C21 6.46957 20.7893 5.96086 20.4142 5.58579C20.0391 5.21071 19.5304 5 19 5H5C4.46957 5 3.96086 5.21071 3.58579 5.58579C3.21071 5.96086 3 6.46957 3 7V17C3 17.5304 3.21071 18.0391 3.58579 18.4142C3.96086 18.7893 4.46957 19 5 19Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </div>
-            <span class="logo-text">MailNet</span>
+    <main class="shell">
+        <div class="brand">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 8L10.89 13.26C11.2187 13.4793 11.6049 13.5963 12 13.5963C12.3951 13.5963 12.7813 13.4793 13.11 13.26L21 8M5 19H19C19.5304 19 20.0391 18.7893 20.4142 18.4142C20.7893 18.0391 21 17.5304 21 17V7C21 6.46957 20.7893 5.96086 20.4142 5.58579C20.0391 5.21071 19.5304 5 19 5H5C4.46957 5 3.96086 5.21071 3.58579 5.58579C3.21071 5.96086 3 6.46957 3 7V17C3 17.5304 3.21071 18.0391 3.58579 18.4142C3.96086 18.7893 4.46957 19 5 19Z" stroke="#8b95ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>MailNet</span>
         </div>
 
-        <p class="tagline">The AI assistant that reads, triages, and drafts your email.</p>
+        <h1>Email that answers itself.</h1>
+        <p class="sub">MailNet reads, triages, drafts, and schedules across your Gmail and Outlook.</p>
 
         {% if error == "missing_scopes" %}
         <div class="error-banner">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="#fca5a5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="#e8a7a7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <p>
                 <strong>Mail access was not granted</strong>
@@ -456,12 +239,8 @@
         </div>
         {% endif %}
 
-        <div class="divider">
-            <span>Sign in with</span>
-        </div>
-
-        <div class="google-wrap">
-            <a href="/login/google" class="login-btn google-btn" onclick="openGmailWarn(event)">
+        <div class="auth">
+            <a href="/login/google" class="login-btn" onclick="openGmailWarn(event)">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                     <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -469,21 +248,22 @@
                     <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
                 </svg>
                 Continue with Google
+                <span class="invite">Invite-only</span>
             </a>
-            <span class="invite-pill">Invite-only</span>
+
+            <a href="/login/microsoft" class="login-btn" onclick="appendTz(event)">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zm12.6 0H12.6V0H24v11.4z" fill="#f4f4f5"/>
+                </svg>
+                Continue with Microsoft
+            </a>
         </div>
 
-        <a href="/login/microsoft" class="login-btn microsoft-btn" onclick="appendTz(event)">
-            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zm12.6 0H12.6V0H24v11.4z" fill="white"/>
-            </svg>
-            Continue with Microsoft
-        </a>
-
-        <p class="footer-text">
-            By continuing, you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
+        <p class="foot">
+            By continuing, you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
         </p>
-    </div>
+    </main>
+
     <div class="modal-overlay" id="gmailWarnModal" role="dialog" aria-modal="true" aria-labelledby="gmailWarnTitle">
         <div class="modal">
             <h2 id="gmailWarnTitle">Heads up: testers only for now</h2>
@@ -526,55 +306,6 @@
     </div>
 
     <script>
-        // --- the agent at work: ghost inbox + quiet triage loop ---
-        (function () {
-            const stage = document.getElementById("agentStage");
-            const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-            const CHIPS = [
-                { label: "Urgent", cls: "" },
-                { label: "Drafted", cls: "teal" },
-                { label: "Scheduled", cls: "" },
-                { label: "Filed", cls: "teal" },
-                { label: "FYI", cls: "teal" },
-            ];
-            const rows = [];
-            for (let i = 0; i < 9; i++) {
-                const row = document.createElement("div");
-                row.className = "ghost-row";
-                const dur = 55 + Math.random() * 35;
-                row.style.setProperty("--w", 250 + Math.round(Math.random() * 120) + "px");
-                row.style.setProperty("--x", Math.round(Math.random() * 78) + "%");
-                row.style.setProperty("--dur", dur.toFixed(1) + "s");
-                row.style.setProperty("--delay", (-Math.random() * dur).toFixed(1) + "s");
-                row.style.setProperty("--static-top", Math.round(5 + Math.random() * 85) + "vh");
-                const inner = document.createElement("div");
-                inner.className = "row-inner";
-                const bars = ['<div class="dot"></div><div class="bars">'];
-                bars.push('<div class="bar" style="width:' + (35 + Math.round(Math.random() * 40)) + '%"></div>');
-                bars.push('<div class="bar" style="width:' + (55 + Math.round(Math.random() * 40)) + '%"></div>');
-                bars.push('</div><span class="chip"></span>');
-                inner.innerHTML = bars.join("");
-                row.appendChild(inner);
-                stage.appendChild(row);
-                rows.push(inner);
-            }
-            if (reduced) return; // static ghost inbox only, no activity
-            function triageOne() {
-                const idle = rows.filter((r) => !r.classList.contains("zap"));
-                if (!idle.length) return;
-                const inner = idle[Math.floor(Math.random() * idle.length)];
-                const chip = CHIPS[Math.floor(Math.random() * CHIPS.length)];
-                const chipEl = inner.querySelector(".chip");
-                chipEl.textContent = chip.label;
-                chipEl.className = "chip " + chip.cls;
-                inner.classList.add("zap");
-                setTimeout(() => inner.classList.add("done"), 2400);
-                setTimeout(() => inner.classList.remove("zap", "done"), 4200);
-            }
-            setTimeout(triageOne, 1200);
-            setInterval(triageOne, 5600);
-        })();
-
         function appendTz(e) {
             e.preventDefault();
             const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
