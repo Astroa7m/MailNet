@@ -22,36 +22,13 @@
             position: relative;
         }
 
-        /* Background gradient orbs */
-        .orb {
+        /* Single quiet light source instead of decorative orbs */
+        body::before {
+            content: '';
             position: absolute;
-            border-radius: 50%;
-            filter: blur(80px);
-            opacity: 0.5;
-        }
-
-        .orb-1 {
-            width: 400px;
-            height: 400px;
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            top: -100px;
-            left: -100px;
-        }
-
-        .orb-2 {
-            width: 300px;
-            height: 300px;
-            background: linear-gradient(135deg, #f093fb, #f5576c);
-            bottom: -50px;
-            right: -50px;
-        }
-
-        .orb-3 {
-            width: 250px;
-            height: 250px;
-            background: linear-gradient(135deg, #4facfe, #00f2fe);
-            top: 50%;
-            right: 10%;
+            inset: 0;
+            background: radial-gradient(ellipse 70% 50% at 50% -10%, rgba(91, 103, 234, 0.12), transparent 70%);
+            pointer-events: none;
         }
 
         /* Grid pattern overlay */
@@ -95,12 +72,11 @@
         .logo-icon {
             width: 48px;
             height: 48px;
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: #4f5ce8;
             border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }
 
         .logo-icon svg {
@@ -111,10 +87,7 @@
         .logo-text {
             font-size: 32px;
             font-weight: 700;
-            background: linear-gradient(135deg, #667eea, #f093fb);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            color: #ffffff;
             letter-spacing: -0.5px;
         }
 
@@ -353,9 +326,6 @@
 </head>
 <body>
     <!-- Background elements -->
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="orb orb-3"></div>
     <div class="grid-pattern"></div>
 
     <div class="login-container">
@@ -369,7 +339,7 @@
             <span class="logo-text">MailNet</span>
         </div>
 
-        <p class="tagline">Connect securely. Communicate seamlessly.</p>
+        <p class="tagline">The AI assistant that reads, triages, and drafts your email.</p>
 
         {% if error == "missing_scopes" %}
         <div class="error-banner">
