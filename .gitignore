@@ -53,3 +53,6 @@ test-login.png
 
 # session screenshots (Playwright/manual test captures)
 /*.png
+
+# launch video project (local only)
+/promo/
