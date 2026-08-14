@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - MailNet</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #0a0a0b; --text: #f4f4f5; --muted: #9a9aa3;
+            --faint: #64646c; --line: #232327; --accent: #8b95ff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg); color: var(--text);
+            -webkit-font-smoothing: antialiased; line-height: 1.65;
+        }
+        .page { max-width: 720px; margin: 0 auto; padding: 56px 28px 80px; }
+        .brand { display: flex; align-items: center; gap: 9px; margin-bottom: 44px; }
+        .brand svg { width: 20px; height: 20px; }
+        .brand a { font-size: 15px; font-weight: 600; color: var(--text); text-decoration: none; letter-spacing: -0.01em; }
+        h1 { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; margin-bottom: 6px; }
+        .updated { font-size: 13px; color: var(--faint); margin-bottom: 36px; }
+        h2 { font-size: 17px; font-weight: 620; letter-spacing: -0.01em; margin: 34px 0 10px; padding-top: 22px; border-top: 1px solid var(--line); }
+        h3 { font-size: 15px; font-weight: 620; color: var(--text); margin: 18px 0 6px; }
+        p, li { font-size: 15px; color: var(--muted); margin-bottom: 12px; }
+        ul { padding-left: 22px; margin-bottom: 12px; }
+        li { margin-bottom: 6px; }
+        strong { color: var(--text); font-weight: 600; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; text-underline-offset: 2px; }
+        .back { display: inline-block; margin-top: 44px; font-size: 14px; }
+        .highlight {
+            border: 1px solid var(--line); border-left: 2px solid var(--accent);
+            border-radius: 8px; padding: 14px 16px; margin: 14px 0;
+        }
+        .highlight p { margin: 0; }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <div class="brand">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 8L10.89 13.26C11.2187 13.4793 11.6049 13.5963 12 13.5963C12.3951 13.5963 12.7813 13.4793 13.11 13.26L21 8M5 19H19C19.5304 19 20.0391 18.7893 20.4142 18.4142C20.7893 18.0391 21 17.5304 21 17V7C21 6.46957 20.7893 5.96086 20.4142 5.58579C20.0391 5.21071 19.5304 5 19 5H5C4.46957 5 3.96086 5.21071 3.58579 5.58579C3.21071 5.96086 3 6.46957 3 7V17C3 17.5304 3.21071 18.0391 3.58579 18.4142C3.96086 18.7893 4.46957 19 5 19Z" stroke="#8b95ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <a href="/login">MailNet</a>
+        </div>
+
+        <h1>Privacy Policy</h1>
+        <p class="updated">Last updated: August 14, 2026</p>
+
+        <p>This policy explains what data MailNet ("the Service", "we") accesses, what it stores, and what it never does with your information. MailNet is operated by an individual developer and exists to let you manage your own email with AI assistance. The short version: <strong>your email is processed to answer your requests, never sold, never used for advertising, and never used to train AI models.</strong></p>
+
+        <h2>1. Data we access</h2>
+        <h3>Account information</h3>
+        <p>When you sign in with Google or Microsoft, we receive your name, email address, and profile picture to create your account.</p>
+        <h3>Email data</h3>
+        <p>With your explicit OAuth consent, the Service accesses your Gmail or Outlook mailbox to perform the actions you request: reading and searching messages, creating drafts, sending, labeling, and scheduling. Email content is fetched <strong>on demand, per request</strong>, and processed to fulfill that request.</p>
+        <h3>Chat and usage data</h3>
+        <p>Your conversations with the assistant, your settings and preferences, and basic technical logs (timestamps, request status, errors) are processed to operate the Service.</p>
+
+        <h2>2. What we store</h2>
+        <ul>
+            <li><strong>OAuth tokens</strong>: stored encrypted (Fernet symmetric encryption). Access tokens live in your server-side session, which expires after 24 hours; a refresh token is stored encrypted so reconnects and scheduled actions work.</li>
+            <li><strong>Conversation history</strong>: your chat threads with the assistant, so you can revisit them. Email content quoted inside a conversation is part of that thread until the thread is deleted.</li>
+            <li><strong>Memory facts</strong>: short preference notes the assistant saves to personalize your experience (for example, who you usually CC). You can view and delete each one in Settings, Memories.</li>
+            <li><strong>Your API keys</strong> (optional): stored encrypted; never displayed back in full, removable at any time in Settings.</li>
+            <li><strong>Preferences</strong>: writing tone, default provider, approval settings, and similar configuration.</li>
+            <li><strong>Tester requests</strong>: if you request Gmail access, we store the email address you submit in order to add you as a tester and contact you.</li>
+        </ul>
+        <p><strong>We do not store a copy of your mailbox.</strong> Your email lives with your provider; the Service reads it through their APIs when you ask.</p>
+
+        <h2>3. What we never do</h2>
+        <ul>
+            <li>We never sell your data or share it with advertisers or data brokers.</li>
+            <li>We never use your email content to train AI models.</li>
+            <li>No human reads your email content, except with your explicit permission for debugging you request.</li>
+            <li>We never send email from your account without an instruction from you (and, unless you enable auto-approve, your explicit confirmation).</li>
+        </ul>
+
+        <h2>4. AI processing and subprocessors</h2>
+        <p>To answer your requests, relevant content is sent transiently to the following categories of processors:</p>
+        <ul>
+            <li><strong>AI model providers</strong>: Google (Gemini) and Groq process the text of your requests and relevant email excerpts to generate responses. If you supply your own API key for a provider, your requests go to that provider under your key.</li>
+            <li><strong>Infrastructure</strong>: the Service runs on Amazon Web Services (EC2); data at rest is stored in MongoDB Atlas; session data lives in a Redis instance on our server; DNS is provided by Cloudflare.</li>
+        </ul>
+        <p>These providers process data to deliver the Service and are bound by their own security and privacy commitments.</p>
+
+        <h2>5. Google API Limited Use disclosure</h2>
+        <div class="highlight">
+            <p>MailNet's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the <strong>Limited Use</strong> requirements. Gmail data is used only to provide user-facing features you request, is never used for advertising, is never sold, and is never used to train generalized AI or machine-learning models.</p>
+        </div>
+
+        <h2>6. Security</h2>
+        <ul>
+            <li>All traffic is encrypted in transit with HTTPS (TLS).</li>
+            <li>OAuth tokens and API keys are encrypted at rest; the encryption key is held only on the server.</li>
+            <li>Application containers are not exposed directly to the internet; access passes through a hardened reverse proxy.</li>
+            <li>Sensitive email actions require your in-chat confirmation unless you opt out.</li>
+        </ul>
+        <p>No system is perfectly secure; the Service is an early-stage project and you use it with that understanding.</p>
+
+        <h2>7. Retention and deletion</h2>
+        <ul>
+            <li><strong>Sessions</strong> expire automatically after 24 hours.</li>
+            <li><strong>Threads and memories</strong> persist until you delete them in the app.</li>
+            <li><strong>Revoking access</strong>: you can disconnect MailNet at any time from your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a> or <a href="https://account.microsoft.com/privacy" target="_blank" rel="noopener">Microsoft account settings</a>; this immediately invalidates the Service's access to your mailbox.</li>
+            <li><strong>Full deletion</strong>: email <a href="mailto:astroscoding@gmail.com">astroscoding@gmail.com</a> and all data associated with your account (account record, tokens, threads, memories, keys) will be deleted within 30 days.</li>
+        </ul>
+
+        <h2>8. Your rights</h2>
+        <p>Depending on where you live, you may have rights to access, correct, export, or erase your personal data, and to object to or restrict its processing. To exercise any of these, contact <a href="mailto:astroscoding@gmail.com">astroscoding@gmail.com</a>. We honor such requests regardless of jurisdiction.</p>
+
+        <h2>9. International transfers</h2>
+        <p>The Service's infrastructure may be located in regions different from yours; by using the Service you consent to your data being processed in those regions with the protections described in this policy.</p>
+
+        <h2>10. Children</h2>
+        <p>The Service is not directed at children and may not be used by anyone under 16. We do not knowingly collect data from children.</p>
+
+        <h2>11. Changes to this policy</h2>
+        <p>We may update this policy as the Service evolves; the date above reflects the current version. Material changes will be visible on this page before they take effect.</p>
+
+        <h2>12. Contact</h2>
+        <p>Privacy questions or requests: <a href="mailto:astroscoding@gmail.com">astroscoding@gmail.com</a></p>
+
+        <a class="back" href="/login">&larr; Back to sign in</a>
+    </main>
+</body>
+</html>

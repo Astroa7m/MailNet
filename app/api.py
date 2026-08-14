@@ -533,6 +533,16 @@ async def login_page_direct(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_page(request: Request):
+    return templates.TemplateResponse("terms.html", {"request": request})
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request):
+    return templates.TemplateResponse("privacy.html", {"request": request})
+
+
 # --- Gmail tester-access requests -------------------------------------------
 # While the app is in Google's testing mode, Gmail sign-in only works for
 # manually-added test users. Visitors ask for access via a form on the login
