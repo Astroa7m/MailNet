@@ -213,6 +213,77 @@ oauth.register(
 # swtiching uis
 UI_PROVIDER = os.getenv("UI_PROVIDER", "custom")
 
+# --- /agent rate limiting -----------------------------------------------
+# Two Redis-backed tiers keyed on the user id (never the IP):
+#   burst: AGENT_BURST_PER_MIN requests/min for everyone, protects the server;
+#   daily: AGENT_DAILY_SHARED requests/day, but only for users running on the
+#          shared developer keys. Users who added their own chat key pay their
+#          own provider bill, so the daily cap does not apply to them.
+# Redis failures fail open: a broken limiter must never take the product down.
+
+AGENT_BURST_PER_MIN = int(os.getenv("AGENT_BURST_PER_MIN", "10"))
+AGENT_DAILY_SHARED = int(os.getenv("AGENT_DAILY_SHARED", "15"))
+
+
+async def _agent_rate_limited(user_id: str, email: Optional[str] = None) -> Optional[str]:
+    """Return a user-facing message when over a limit, else None."""
+    try:
+        # The admin is exempt from all limits (matched on either login email
+        # via the session, or the account's google_email for Microsoft logins).
+        if ADMIN_EMAIL and email and email.lower() == ADMIN_EMAIL.lower():
+            return None
+        doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"api_keys.chat.key": 1, "google_email": 1})
+        if ADMIN_EMAIL and ((doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower():
+            return None
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        minute_key = f"rl:m:{user_id}:{now.strftime('%d%H%M')}"
+        n = await redis_client.incr(minute_key)
+        if n == 1:
+            await redis_client.expire(minute_key, 120)
+        if n > AGENT_BURST_PER_MIN:
+            return (
+                "You're sending messages faster than I can handle. "
+                "Give me a minute to catch up, then try again."
+            )
+
+        has_own_key = bool((((doc or {}).get("api_keys") or {}).get("chat") or {}).get("key"))
+        if not has_own_key:
+            day_key = f"rl:d:{user_id}:{now.strftime('%Y%m%d')}"
+            n = await redis_client.incr(day_key)
+            if n == 1:
+                await redis_client.expire(day_key, 172800)
+            if n > AGENT_DAILY_SHARED:
+                return (
+                    "You've used today's free message allowance on the shared AI keys. "
+                    "It resets at midnight UTC, or add your own API key in "
+                    "Settings, AI Models, to keep going without limits."
+                )
+    except Exception as e:
+        log.warning("rate limit check failed (allowing request): %r", e)
+    return None
+
+
+async def _rate_limit_stream(input_data: "RunAgentInput", accept: Optional[str], text: str):
+    """Stream a synthetic assistant reply so a limit reads as a polite in-chat
+    message instead of a broken request."""
+    from ag_ui.core import (
+        RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent,
+        TextMessageEndEvent, RunFinishedEvent,
+    )
+    enc = EventEncoder(accept=accept)
+    run_id = str(uuid.uuid4())
+    msg_id = str(uuid.uuid4())
+    for ev in [
+        RunStartedEvent(type="RUN_STARTED", run_id=run_id, thread_id=input_data.thread_id or ""),
+        TextMessageStartEvent(type="TEXT_MESSAGE_START", message_id=msg_id, role="assistant"),
+        TextMessageContentEvent(type="TEXT_MESSAGE_CONTENT", message_id=msg_id, delta=text),
+        TextMessageEndEvent(type="TEXT_MESSAGE_END", message_id=msg_id),
+        RunFinishedEvent(type="RUN_FINISHED", run_id=run_id, thread_id=input_data.thread_id or ""),
+    ]:
+        yield enc.encode(ev)
+
+
 if is_not_using_copilot_kit:
     from chainlit.utils import mount_chainlit
 
@@ -224,6 +295,17 @@ else:
         user = request.session.get("user")
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
+
+        # Rate check before any token refresh, DB, or LLM work happens.
+        limited = await _agent_rate_limited(user["id"], user.get("email"))
+        if limited:
+            log.info("[req=%s] rate limited user=%s", rid, user["id"])
+            accept = request.headers.get("accept")
+            enc = EventEncoder(accept=accept)
+            return StreamingResponse(
+                _rate_limit_stream(input_data, accept, limited),
+                media_type=enc.get_content_type(),
+            )
 
         azure_token = None
         google_token = None
