@@ -9,6 +9,7 @@ services:
       retries: 10
 
   mcp:
+    image: astroa7m/mailnet-mcp:latest
     build:
       context: ./mcp-server
     ports:
@@ -20,6 +21,7 @@ services:
     restart: unless-stopped
 
   scheduler:
+    image: astroa7m/mailnet-scheduler:latest
     build:
       context: .
       dockerfile: app/Dockerfile
@@ -41,6 +43,7 @@ services:
     restart: unless-stopped
 
   api:
+    image: astroa7m/mailnet-api:latest
     build:
       context: .
       dockerfile: app/Dockerfile
@@ -66,6 +69,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: astroa7m/mailnet-frontend:latest
     build:
       context: ./frontend
       args:
