@@ -17,6 +17,7 @@ interface Preferences {
   default_provider: string;
   include_thread_context: boolean;
   auto_approve_tools: string[];
+  memory_enabled: boolean;
 }
 
 const DEFAULTS: Preferences = {
@@ -33,6 +34,7 @@ const DEFAULTS: Preferences = {
   default_provider: "google",
   include_thread_context: true,
   auto_approve_tools: [],
+  memory_enabled: true,
 };
 
 // Sensitive actions that prompt for confirmation, shown in the Approvals tab.
@@ -272,6 +274,7 @@ export default function SettingsModal({
   const [chatKeyInput, setChatKeyInput] = useState("");
   const [embedProvider, setEmbedProvider] = useState("google");
   const [embedHasKey, setEmbedHasKey] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [embedKeyInput, setEmbedKeyInput] = useState("");
   const [aiOriginal, setAiOriginal] = useState({ chatProvider: "groq", chatModel: "", embedProvider: "google" });
   // Live model list + per-slot validation feedback.
@@ -304,6 +307,7 @@ export default function SettingsModal({
         setPrefs(merged);
         setOriginal(merged);
         setProviders(meData.providers ?? []);
+        setIsAdmin(!!meData.is_admin);
 
         // Probe real token health in the background (it does live refreshes, so
         // it is slower than /me). Badges update from "Connected" assumption to
@@ -933,6 +937,42 @@ export default function SettingsModal({
                     <button onClick={clearAllMemories} className="shrink-0 text-xs text-red-500 hover:underline ml-3">
                       Clear all
                     </button>
+                  )}
+                </div>
+                {/* Memory master switch: BYOK-only, locked without an own key */}
+                <div className="mb-4 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Memory</span>
+                    <div className="flex items-center gap-2">
+                      <Toggle
+                        checked={(embedHasKey || isAdmin) && prefs.memory_enabled !== false}
+                        disabled={!embedHasKey && !isAdmin}
+                        onChange={(v) => set("memory_enabled", v)}
+                      />
+                      <span className="text-xs text-gray-400 dark:text-gray-500">
+                        {!embedHasKey && !isAdmin ? "Off" : prefs.memory_enabled !== false ? "On" : "Paused"}
+                      </span>
+                    </div>
+                  </div>
+                  {!embedHasKey && !isAdmin ? (
+                    <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
+                      Memory is off. It runs AI extraction and recall on your conversations, which
+                      MailNet's free shared keys don't cover. To enable it, add your own{" "}
+                      <button type="button" onClick={() => setActiveTab("ai")} className="text-blue-500 hover:underline">
+                        Smart Features key
+                      </button>{" "}
+                      (Google, OpenAI, or Ollama), then flip this switch.
+                    </p>
+                  ) : prefs.memory_enabled !== false ? (
+                    <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
+                      MailNet remembers durable facts about you (recurring contacts, standing
+                      instructions) and recalls them to personalize replies.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
+                      Memory is paused. MailNet won't save new facts or recall existing ones until
+                      you turn it back on. Your saved memories below are kept.
+                    </p>
                   )}
                 </div>
                 <p className="text-xs text-gray-400 dark:text-gray-500 mb-3 leading-relaxed">

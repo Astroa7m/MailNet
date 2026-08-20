@@ -428,8 +428,10 @@ else:
             if not last_user_text.strip():
                 return ""
             try:
+                enabled, ep_provider, ep_key = _user_memory_access(user["id"])
+                if not enabled:
+                    return ""
                 from app.memory_store import recall as _recall
-                ep_provider, ep_key = _user_embed_config(user["id"])
                 return await asyncio.to_thread(
                     _recall, user["id"], last_user_text, provider=ep_provider, api_key=ep_key
                 )
@@ -725,13 +727,18 @@ async def get_me(request: Request):
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    user_doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"providers": 1})
+    user_doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"providers": 1, "google_email": 1})
     providers = user_doc.get("providers", [user.get("provider", "google")]) if user_doc else [user.get("provider", "google")]
+    is_admin = bool(ADMIN_EMAIL) and (
+        user.get("email", "").lower() == ADMIN_EMAIL.lower()
+        or ((user_doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
+    )
     return {
         "name": user.get("name", ""),
         "email": user.get("email", ""),
         "picture": user.get("picture", ""),
         "providers": providers,
+        "is_admin": is_admin,
     }
 
 
@@ -1167,18 +1174,25 @@ async def delete_api_key(slot: str, request: Request):
     return {"ok": True}
 
 
-def _user_embed_config(user_id: str):
-    """Resolve a user's smart-features (embeddings) provider + decrypted key, or
-    (None, None) to use the shared default. Mirrors build_agent."""
-    doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"api_keys": 1})
-    cfg = ((doc or {}).get("api_keys") or {}).get("embeddings") or {}
-    provider = cfg.get("provider")
-    if provider and cfg.get("key"):
+def _user_memory_access(user_id: str):
+    """(enabled, provider, key) for semantic memory. Memory is BYOK-only: it
+    needs the user's own smart-features key, except for the admin account.
+    A memory_enabled=False preference pauses it even with a key. Mirrors the
+    gate in build_agent."""
+    doc = db["users"].find_one(
+        {"_id": ObjectId(user_id)},
+        {"api_keys.embeddings": 1, "preferences.memory_enabled": 1, "google_email": 1},
+    ) or {}
+    cfg = (doc.get("api_keys") or {}).get("embeddings") or {}
+    provider = key = None
+    if cfg.get("provider") and cfg.get("key"):
         try:
-            return provider, decrypt_payload(cfg["key"])["key"]
+            provider, key = cfg["provider"], decrypt_payload(cfg["key"])["key"]
         except Exception:
-            return None, None
-    return None, None
+            provider = key = None
+    is_admin = bool(ADMIN_EMAIL) and (doc.get("google_email") or "").lower() == ADMIN_EMAIL.lower()
+    enabled = (bool(key) or is_admin) and (doc.get("preferences") or {}).get("memory_enabled") is not False
+    return enabled, provider, key
 
 
 @app.get("/memories")
@@ -1188,7 +1202,7 @@ async def get_memories(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     from app.memory_store import list_memories
-    provider, key = _user_embed_config(user["id"])
+    _enabled, provider, key = _user_memory_access(user["id"])
     items = await asyncio.to_thread(list_memories, user["id"], provider=provider, api_key=key)
     return {"memories": items}
 
@@ -1200,7 +1214,7 @@ async def remove_memory(memory_id: str, request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     from app.memory_store import delete_memory
-    provider, key = _user_embed_config(user["id"])
+    _enabled, provider, key = _user_memory_access(user["id"])
     ok = await asyncio.to_thread(delete_memory, memory_id, provider=provider, api_key=key)
     if not ok:
         raise HTTPException(status_code=400, detail="Could not delete memory")
@@ -1214,7 +1228,7 @@ async def clear_all_memories(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     from app.memory_store import clear_memories
-    provider, key = _user_embed_config(user["id"])
+    _enabled, provider, key = _user_memory_access(user["id"])
     ok = await asyncio.to_thread(clear_memories, user["id"], provider=provider, api_key=key)
     return {"ok": ok}
 

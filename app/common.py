@@ -414,7 +414,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
     prefs = DEFAULT_PREFERENCES.copy()
     api_keys = {}
     if user_id:
-        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1, "api_keys": 1})
+        user_doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"preferences": 1, "api_keys": 1, "google_email": 1})
         if user_doc:
             if "preferences" in user_doc:
                 prefs = user_doc["preferences"]
@@ -468,6 +468,22 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         except Exception as e:
             log.warning("could not decrypt embeddings key (%r); falling back to shared", e)
             embed_provider = None
+
+    # Memory is BYOK-only: recall runs on every message and extraction on every
+    # save, which the shared keys don't cover. It needs the user's own smart
+    # features key, except for the admin account (matched on google_email).
+    # A memory_enabled=False preference pauses it even with a key present.
+    _admin_email = os.getenv("ADMIN_EMAIL", "")
+    _is_admin = bool(_admin_email) and (
+        ((user_doc or {}).get("google_email") or "").lower() == _admin_email.lower()
+        if user_id else False
+    )
+    memory_on = (bool(embed_key) or _is_admin) and prefs.get("memory_enabled") is not False
+    MEMORY_OFF_NOTE = (
+        "Memory is currently turned off for this account. It needs the user's own "
+        "Smart Features key: tell the user they can add one in Settings, AI Models, "
+        "and then enable the memory switch in Settings, Memories."
+    )
 
     # Sensitive tools the user has chosen to auto-approve (skip the HITL prompt).
     auto_approve = set(prefs.get("auto_approve_tools") or [])
@@ -605,6 +621,8 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         sentence (e.g. 'The user's manager is Sara Lee (sara@acme.com).')."""
         if not user_id:
             return "Cannot save memory: no user context."
+        if not memory_on:
+            return MEMORY_OFF_NOTE
         return memory_remember(user_id, fact, provider=embed_provider, api_key=embed_key)
 
     def get_current_time() -> str:
@@ -676,6 +694,8 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         Memories panel in settings."""
         if not user_id:
             return "Cannot remove memory: no user context."
+        if not memory_on:
+            return MEMORY_OFF_NOTE
         return memory_forget(user_id, description, provider=embed_provider, api_key=embed_key)
 
     formatted_sys_prompt = SYSTEM_PROMPT.substitute(language=prefs['language'],
