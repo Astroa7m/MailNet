@@ -458,6 +458,25 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         log.warning("could not build chat LLM (%r); falling back to shared Groq", e)
         llm = _build_shared_llm()
 
+    # Silent failover between the two shared providers: when the active shared
+    # key gets rate-limited mid-request, the error middleware retries the same
+    # request once on the other shared provider before asking the user for
+    # their own key. BYOK users get no failover (it's their key and quota).
+    _fallback_llm = None
+    _fallback_label = ""
+    if using_shared:
+        try:
+            active_shared = provider if (provider and shared_provider_key) else "groq"
+            if active_shared != "google_genai" and os.getenv("GOOGLE_API_KEY"):
+                _fallback_label = f"google_genai/{DEFAULT_CHAT_MODELS['google_genai']} (shared failover)"
+                _fallback_llm = _build_llm("google_genai", os.getenv("GOOGLE_API_KEY"), DEFAULT_CHAT_MODELS["google_genai"])
+            elif active_shared == "google_genai" and os.getenv("GROQ_API_KEY"):
+                _fallback_label = "groq/openai/gpt-oss-120b (shared failover)"
+                _fallback_llm = _build_shared_llm()
+        except Exception as e:
+            log.warning("could not build failover model: %r", e)
+            _fallback_llm = None
+
     # Smart features (memory): the user's own embedding key if saved, else shared Gemini.
     embed_cfg = api_keys.get("embeddings") or {}
     embed_provider = embed_cfg.get("provider")
@@ -810,6 +829,17 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
                 raise
             kind = classify_provider_error(e)
             if kind == "quota":
+                if using_shared and _fallback_llm is not None:
+                    log.warning(
+                        "shared chat model rate-limited; failing over to %s: %r",
+                        _fallback_label, e,
+                    )
+                    try:
+                        return await handler(request.override(model=_fallback_llm))
+                    except GraphInterrupt:
+                        raise
+                    except Exception as e2:
+                        log.warning("failover model also failed (%r); surfacing BYOK message", e2)
                 log.warning("chat quota/limit error (shared=%s): %r", using_shared, e)
                 return AIMessage(content=quota_message(using_shared))
             if kind == "auth":
