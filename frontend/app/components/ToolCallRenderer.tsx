@@ -3,14 +3,15 @@ import ToolCard from "./ToolCard";
 import EmailListCard from "./EmailListCard";
 import EmailActionCard from "./EmailActionCard";
 import SearchCard from "./SearchCard";
+import TriageCard from "./TriageCard";
 import { useInterruptContext } from "./InterruptContext";
 
 const TOOL_META: Record<string, { label: string; pendingLabel: string; successLabel: string }> = {
   send_draft:               { label: "Send Draft",               pendingLabel: "Sending…",    successLabel: "Sent" },
   delete_email:             { label: "Delete Email",             pendingLabel: "Deleting…",   successLabel: "Deleted" },
   update_email_settings:    { label: "Update Settings",          pendingLabel: "Saving…",     successLabel: "Saved" },
-  schedule_send_email:      { label: "Schedule Email",           pendingLabel: "Scheduling…", successLabel: "Scheduled" },
-  schedule_recurring_email: { label: "Schedule Recurring Email", pendingLabel: "Scheduling…", successLabel: "Scheduled" },
+  bound_schedule_send_email:      { label: "Schedule Email",           pendingLabel: "Awaiting approval…", successLabel: "Scheduled" },
+  bound_schedule_recurring_email: { label: "Schedule Recurring Email", pendingLabel: "Awaiting approval…", successLabel: "Scheduled" },
   remember_user_fact:       { label: "Remember",                 pendingLabel: "Saving…",     successLabel: "Remembered" },
   recall_user_context:      { label: "Recall Memory",            pendingLabel: "Recalling…",  successLabel: "Recalled" },
   forget_memory:            { label: "Forget",                   pendingLabel: "Removing…",   successLabel: "Removed" },
@@ -24,6 +25,10 @@ const CONFIRM_LABELS: Record<string, { confirm: string; danger?: boolean }> = {
   reply_to_email: { confirm: "Send reply" },
   send_draft:     { confirm: "Send" },
   delete_email:   { confirm: "Delete", danger: true },
+  bound_schedule_send_email:      { confirm: "Schedule" },
+  bound_schedule_recurring_email: { confirm: "Schedule" },
+  update_email_settings:          { confirm: "Save" },
+  download_attachment:            { confirm: "Download" },
 };
 
 const SendIcon = () => (
@@ -47,6 +52,9 @@ interface Props {
   status: string;
   args?: Record<string, unknown> | unknown;
   result?: string;
+  // Stable per-call identity (live: CopilotKit's toolCallId, history: msg.id).
+  // Only EmailListCard currently uses it, to coordinate with TriageCard.
+  toolCallId?: string;
 }
 
 function ApprovalButtons({ tool, resolve }: { tool: string; resolve: (r: any) => void }) {
@@ -89,7 +97,7 @@ export const HIDDEN_TOOLS = new Set([
   "search_tools", "load_tools", "unload_tools",
 ]);
 
-export default function ToolCallRenderer({ name, status, args, result }: Props) {
+export default function ToolCallRenderer({ name, status, args, result, toolCallId }: Props) {
   const { pending } = useInterruptContext();
 
   if (HIDDEN_TOOLS.has(name)) return null;
@@ -99,13 +107,16 @@ export default function ToolCallRenderer({ name, status, args, result }: Props) 
   // even though the tool never ran. A paused tool has NO result yet, while
   // every historical card does. So "matches pending tool AND has no result" is
   // the precise, flicker-free signal.
-  const showApproval = !!pending && pending.tool === name && !result;
+  const showApproval =
+    !!pending &&
+    !result &&
+    (pending.toolCallId && toolCallId ? pending.toolCallId === toolCallId : pending.tool === name);
   // While awaiting approval, force the card to read as in-progress instead of
   // showing a premature "Sent"/"Saved" badge from the args-complete status.
   const cardStatus = showApproval ? "executing" : status;
 
   if (name === "read_emails" || name === "search_emails") {
-    return <EmailListCard status={status} result={result} />;
+    return <EmailListCard status={status} result={result} id={toolCallId} />;
   }
 
   // web_search gets the cinematic "scanning the web" treatment, the hero moment
@@ -114,11 +125,18 @@ export default function ToolCallRenderer({ name, status, args, result }: Props) 
     return <SearchCard status={cardStatus} args={args} result={result} />;
   }
 
+  // present_triage renders the grouped urgency card; payload lives in args.
+  if (name === "present_triage") {
+    return <TriageCard status={status} args={args} result={result} />;
+  }
+
   let card: React.ReactNode;
   if (name === "send_email") {
     card = <EmailActionCard args={args as any} status={cardStatus} result={result} label="Send Email" icon={<SendIcon />} pendingLabel="Awaiting approval…" successLabel="Sent" />;
   } else if (name === "draft_email") {
     card = <EmailActionCard args={args as any} status={cardStatus} result={result} label="Save Draft" icon={<DraftIcon />} pendingLabel="Saving…" successLabel="Saved" />;
+  } else if (name === "bound_schedule_send_email" || name === "bound_schedule_recurring_email") {
+    card = <EmailActionCard args={args as any} status={cardStatus} result={result} label={name === "bound_schedule_send_email" ? "Schedule Email" : "Schedule Recurring Email"} icon={<SendIcon />} pendingLabel="Awaiting approval…" successLabel="Scheduled" />;
   } else if (name === "reply_to_email") {
     card = <EmailActionCard args={args as any} status={cardStatus} result={result} label="Reply to Email" icon={<ReplyIcon />} pendingLabel="Awaiting approval…" successLabel="Sent" />;
   } else {

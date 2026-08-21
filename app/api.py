@@ -3,10 +3,12 @@ import base64
 import datetime
 import os
 import re
+import secrets
 import sys
 import time
 import uuid
 from pathlib import Path
+from zoneinfo import available_timezones
 
 from typing import Optional
 from ag_ui.core.types import RunAgentInput
@@ -31,7 +33,7 @@ from bson import ObjectId
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
-    build_agent, fetch_mcp_tools, get_or_create_user, db, mongo_client, content_to_text
+    build_agent, fetch_mcp_tools, get_or_create_user, db, mongo_client, content_to_text, SENSITIVE_TOOLS
 from provider_meta import list_chat_models, validate_key, ProviderError
 from logging_config import get_logger
 
@@ -221,6 +223,32 @@ UI_PROVIDER = os.getenv("UI_PROVIDER", "custom")
 #          own provider bill, so the daily cap does not apply to them.
 # Redis failures fail open: a broken limiter must never take the product down.
 
+# Preferences a client may write, and how each is validated. Anything not
+# listed here is rejected outright.
+# Tool results the frontend parses as JSON; truncating these breaks the card.
+_FULL_RESULT_TOOLS = {
+    "read_emails", "search_emails", "web_search",
+    "send_email", "draft_email", "reply_to_email",
+}
+
+_PREF_TEXT_LIMIT = 400
+_WRITABLE_PREFERENCES = {
+    "language": str,
+    "tone": str,
+    "writing_style": str,
+    "sender_name": str,
+    "organization_name": str,
+    "preferred_greeting": str,
+    "signature": str,
+    "include_signature": bool,
+    "auto_adjust_tone": bool,
+    "include_thread_context": bool,
+    "memory_enabled": bool,
+    "character_limit": int,
+    "default_provider": "provider",
+    "auto_approve_tools": "tools",
+}
+
 AGENT_BURST_PER_MIN = int(os.getenv("AGENT_BURST_PER_MIN", "10"))
 AGENT_DAILY_SHARED = int(os.getenv("AGENT_DAILY_SHARED", "15"))
 
@@ -228,19 +256,17 @@ AGENT_DAILY_SHARED = int(os.getenv("AGENT_DAILY_SHARED", "15"))
 async def _agent_rate_limited(user_id: str, email: Optional[str] = None) -> Optional[str]:
     """Return a user-facing message when over a limit, else None."""
     try:
-        # The admin is exempt from all limits (matched on either login email
-        # via the session, or the account's google_email for Microsoft logins).
-        if ADMIN_EMAIL and email and email.lower() == ADMIN_EMAIL.lower():
-            return None
         doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"api_keys.chat.key": 1, "google_email": 1})
+        # The admin account is exempt from all limits.
         if ADMIN_EMAIL and ((doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower():
             return None
 
         now = datetime.datetime.now(datetime.timezone.utc)
         minute_key = f"rl:m:{user_id}:{now.strftime('%d%H%M')}"
+        # SET NX EX first so the key always carries a TTL, even if the process
+        # dies between the two calls.
+        await redis_client.set(minute_key, 0, ex=120, nx=True)
         n = await redis_client.incr(minute_key)
-        if n == 1:
-            await redis_client.expire(minute_key, 120)
         if n > AGENT_BURST_PER_MIN:
             return (
                 "You're sending messages faster than I can handle. "
@@ -250,9 +276,8 @@ async def _agent_rate_limited(user_id: str, email: Optional[str] = None) -> Opti
         has_own_key = bool((((doc or {}).get("api_keys") or {}).get("chat") or {}).get("key"))
         if not has_own_key:
             day_key = f"rl:d:{user_id}:{now.strftime('%Y%m%d')}"
+            await redis_client.set(day_key, 0, ex=172800, nx=True)
             n = await redis_client.incr(day_key)
-            if n == 1:
-                await redis_client.expire(day_key, 172800)
             if n > AGENT_DAILY_SHARED:
                 return (
                     "You've used today's free message allowance on the shared AI keys. "
@@ -287,7 +312,7 @@ async def _rate_limit_stream(input_data: "RunAgentInput", accept: Optional[str],
 if is_not_using_copilot_kit:
     from chainlit.utils import mount_chainlit
 
-    mount_chainlit(app=app, target=r"C:\Users\ahmed\PycharmProjects\MailNet\app\chatting_ui.py", path="/chat")
+    mount_chainlit(app=app, target=str(Path(__file__).parent / "chatting_ui.py"), path="/chat")
 else:
     @app.post("/agent")
     async def agent_endpoint(input_data: RunAgentInput, request: Request):
@@ -387,6 +412,17 @@ else:
         if existing_thread and existing_thread.get("user_id") != user["id"]:
             raise HTTPException(status_code=403, detail="You do not have access to this conversation")
         if thread_id and not existing_thread:
+            # A deleted or unknown thread id can still have conversation history
+            # in the checkpointer. Claiming it would attach that history to the
+            # new owner, so refuse rather than create.
+            try:
+                from common import _checkpointer
+                orphan = _checkpointer.get_tuple({"configurable": {"thread_id": thread_id}})
+            except Exception:
+                orphan = None
+            if orphan:
+                raise HTTPException(status_code=403, detail="You do not have access to this conversation")
+
             title = "New conversation"
             user_msgs = [m for m in input_data.messages if m.role == "user"]
             if user_msgs:
@@ -597,9 +633,16 @@ else:
 
 
 @app.post("/tz")
+@limiter.limit("20/minute")
 async def set_timezone(request: Request):
+    """Unauthenticated writes here minted a fresh 24h Redis session per call,
+    so it is session-gated and value-checked."""
+    if not request.session.get("user"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     data = await request.json()
     tz = data.get("tz", "UTC")
+    if not isinstance(tz, str) or tz not in available_timezones():
+        raise HTTPException(status_code=422, detail="Invalid timezone")
     request.session["tz"] = tz
     return {"tz": tz}
 
@@ -635,6 +678,34 @@ async def privacy_page(request: Request):
 # refresh token. ADMIN_EMAIL must be the admin user's google_email.
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
+
+
+def _rotate_session(request: Request) -> None:
+    """Issue a NEW session id at the anonymous -> authenticated boundary.
+
+    starlette_session reuses the incoming key, so the cookie a visitor already
+    holds before signing in would keep working afterwards (session fixation).
+    Timezone is the only pre-auth value worth carrying across."""
+    tz = request.session.get("tz")
+    request.session.clear()
+    request.scope.pop("__session_key", None)
+    if tz:
+        request.session["tz"] = tz
+
+
+def _is_admin_id(user_id: Optional[str]) -> bool:
+    """Single source of truth for admin identity.
+
+    Resolved from the account's stored google_email, never from the session's
+    email: that value is an identity-provider claim carried in the session, so
+    authorization decisions should not depend on it."""
+    if not ADMIN_EMAIL or not user_id:
+        return False
+    try:
+        doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"google_email": 1})
+    except Exception:
+        return False
+    return ((doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -713,7 +784,7 @@ async def tester_request(request: Request, background_tasks: BackgroundTasks):
 @app.get("/tester-requests")
 async def list_tester_requests(request: Request):
     user = request.session.get("user")
-    if not user or not ADMIN_EMAIL or user.get("email") != ADMIN_EMAIL:
+    if not user or not _is_admin_id(user.get("id")):
         raise HTTPException(status_code=404, detail="Not found")
     rows = list(db["tester_requests"].find({}, {"_id": 0}).sort("created_at", -1))
     for r in rows:
@@ -729,10 +800,7 @@ async def get_me(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"providers": 1, "google_email": 1})
     providers = user_doc.get("providers", [user.get("provider", "google")]) if user_doc else [user.get("provider", "google")]
-    is_admin = bool(ADMIN_EMAIL) and (
-        user.get("email", "").lower() == ADMIN_EMAIL.lower()
-        or ((user_doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
-    )
+    is_admin = bool(ADMIN_EMAIL) and ((user_doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
     return {
         "name": user.get("name", ""),
         "email": user.get("email", ""),
@@ -883,6 +951,7 @@ async def auth_google(request: Request):
         name = user_info.get("name", "")
         picture = user_info.get("picture", "")
         user = get_or_create_user(email, name, picture, "google")
+        _rotate_session(request)
         request.session["user"] = {
             "id": user["_id"], "email": email,
             "name": name, "picture": picture, "provider": "google",
@@ -950,6 +1019,7 @@ async def auth_microsoft(request: Request):
             name = user_info.get("name", "")
             picture = user_info.get("picture", "")
             user = get_or_create_user(email, name, picture, "microsoft")
+            _rotate_session(request)
             request.session["user"] = {
                 "id": user["_id"], "email": email,
                 "name": name, "picture": picture, "provider": "microsoft",
@@ -1003,8 +1073,40 @@ async def update_preferences(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     updates = await request.json()
-    set_fields = {f"preferences.{k}": v for k, v in updates.items()}
-    db["users"].update_one({"_id": ObjectId(user["id"])}, {"$set": set_fields})
+    if not isinstance(updates, dict):
+        raise HTTPException(status_code=422, detail="Invalid payload")
+
+    # Without an allowlist any key became preferences.<k>, which let anything
+    # able to issue a same-origin request (for example injected script) enable
+    # auto-approval for sensitive tools and silently disable the approval gate.
+    clean: dict = {}
+    for key, value in updates.items():
+        if key not in _WRITABLE_PREFERENCES:
+            raise HTTPException(status_code=422, detail=f"Unknown preference '{key}'")
+        expected = _WRITABLE_PREFERENCES[key]
+        if expected is str:
+            if not isinstance(value, str) or len(value) > _PREF_TEXT_LIMIT:
+                raise HTTPException(status_code=422, detail=f"Invalid value for '{key}'")
+        elif expected is bool:
+            if not isinstance(value, bool):
+                raise HTTPException(status_code=422, detail=f"Invalid value for '{key}'")
+        elif expected is int:
+            if not isinstance(value, int) or isinstance(value, bool) or not (100 <= value <= 5000):
+                raise HTTPException(status_code=422, detail=f"Invalid value for '{key}'")
+        elif expected == "provider":
+            if value not in ("google", "microsoft"):
+                raise HTTPException(status_code=422, detail="Invalid default_provider")
+        elif expected == "tools":
+            if not isinstance(value, list) or not all(t in SENSITIVE_TOOLS for t in value):
+                raise HTTPException(status_code=422, detail="Invalid auto_approve_tools")
+            value = sorted(set(value))
+        clean[key] = value
+
+    if clean:
+        db["users"].update_one(
+            {"_id": ObjectId(user["id"])},
+            {"$set": {f"preferences.{k}": v for k, v in clean.items()}},
+        )
     return {"ok": True}
 
 
@@ -1118,6 +1220,7 @@ async def put_api_keys(request: Request):
 
 
 @app.post("/provider-models")
+@limiter.limit("30/hour")
 async def provider_models(request: Request):
     """Validate a key and (for chat) list its available models.
 
@@ -1144,8 +1247,9 @@ async def provider_models(request: Request):
         saved = ((doc or {}).get("api_keys") or {}).get(slot) or {}
         if saved.get("provider") == provider and saved.get("key"):
             key = decrypt_payload(saved["key"])["key"]
-    if not key:
-        key = _shared_key_for(provider)
+    # No shared-key fallback here: this endpoint exists to validate the USER's
+    # key, and falling back spent the shared quota on every unauthenticated-ish
+    # settings interaction, with no rate limit in front of it.
     if not key:
         return {"ok": False, "reason": "error", "message": "No API key available for this provider yet. Paste your key above."}
 
@@ -1215,7 +1319,11 @@ async def remove_memory(memory_id: str, request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     from app.memory_store import delete_memory
     _enabled, provider, key = _user_memory_access(user["id"])
-    ok = await asyncio.to_thread(delete_memory, memory_id, provider=provider, api_key=key)
+    # Every other memory route filters by user_id; this one deleted by raw id
+    # against a collection shared by all users.
+    ok = await asyncio.to_thread(
+        delete_memory, memory_id, provider=provider, api_key=key, user_id=user["id"]
+    )
     if not ok:
         raise HTTPException(status_code=400, detail="Could not delete memory")
     return {"ok": True}
@@ -1269,6 +1377,19 @@ async def delete_thread(thread_id: str, request: Request):
     result = db["threads"].delete_one({"thread_id": thread_id, "user_id": user["id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Thread not found")
+
+    # The threads row is only metadata: the conversation itself (including full
+    # email bodies in tool args) lives in the LangGraph checkpoint, which
+    # survived deletion and could be re-attached by re-claiming the thread id.
+    try:
+        from common import _checkpointer
+        if hasattr(_checkpointer, "delete_thread"):
+            _checkpointer.delete_thread(thread_id)
+        else:
+            db["checkpoints"].delete_many({"thread_id": thread_id})
+            db["checkpoint_writes"].delete_many({"thread_id": thread_id})
+    except Exception as e:
+        log.warning("checkpoint cleanup failed for thread %s: %r", thread_id[:8], e)
     return {"ok": True}
 
 
@@ -1298,11 +1419,24 @@ async def get_thread_messages(thread_id: str, request: Request):
 
         messages = checkpoint_tuple.checkpoint.get("channel_values", {}).get("messages", [])
 
-        # Pre-index tool results by tool_call_id
+        # tool_call_id -> tool name, so the result cap below can be name-aware
+        tool_names: dict[str, str] = {}
+        for msg in messages:
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.get("id"):
+                        tool_names[tc["id"]] = tc.get("name", "")
+
+        # Pre-index tool results by tool_call_id. Cards for these tools parse
+        # the result as JSON, so a mid-string cut made every replayed inbox read
+        # render "Could not parse email results". Free-text tools stay capped.
         tool_results: dict[str, str] = {}
         for msg in messages:
             if isinstance(msg, ToolMessage):
-                tool_results[msg.tool_call_id] = content_to_text(msg.content)[:500]
+                text = content_to_text(msg.content)
+                if tool_names.get(msg.tool_call_id) not in _FULL_RESULT_TOOLS:
+                    text = text[:500]
+                tool_results[msg.tool_call_id] = text
 
         result = []
         for msg in messages:
@@ -1356,7 +1490,34 @@ def _purge_old_attachments():
         del _attachment_store[k]
 
 
+# Attachments are only rendered inline for types that cannot execute script.
+# SVG is deliberately excluded: it runs JavaScript when loaded in an <img> or
+# opened directly, and these files are served from the app's own origin.
+_INLINE_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
+_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_MAX_USER_ATTACHMENT_BYTES = 60 * 1024 * 1024
+
+# Lets the MCP server (server-to-server, no cookies) fetch attachment payloads.
+INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
+
+
+def _get_owned_attachment(file_id: str, user_id: Optional[str]):
+    """Return the entry only if it exists, is unexpired, and belongs to user_id.
+    Pass user_id=None for the trusted internal caller. Expiry is enforced here
+    because purging only ran on upload, so a stale entry stayed readable."""
+    att = _attachment_store.get(file_id)
+    if not att:
+        return None
+    if time.time() - att["uploaded_at"] > _ATTACHMENT_TTL:
+        _attachment_store.pop(file_id, None)
+        return None
+    if user_id is not None and att.get("user_id") != user_id:
+        return None
+    return att
+
+
 @app.post("/upload-attachment")
+@limiter.limit("30/hour")
 async def upload_attachment(request: Request, file: Optional[UploadFile] = File(None)):
     user = request.session.get("user")
     if not user:
@@ -1364,17 +1525,31 @@ async def upload_attachment(request: Request, file: Optional[UploadFile] = File(
     if file is None:
         raise HTTPException(status_code=422, detail="No file provided")
 
-    content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
+    # Read in chunks so an oversized body is rejected as it arrives instead of
+    # being fully buffered in memory first.
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
+        chunks.append(chunk)
+    content = b"".join(chunks)
 
     _purge_old_attachments()
+    used = sum(v["size"] for v in _attachment_store.values() if v.get("user_id") == user["id"])
+    if used + total > _MAX_USER_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="Attachment storage is full, try again later")
+
     file_id = str(uuid.uuid4())
     _attachment_store[file_id] = {
         "filename": file.filename or "attachment",
         "mimeType": file.content_type or "application/octet-stream",
         "data": base64.b64encode(content).decode(),
-        "size": len(content),
+        "size": total,
         "uploaded_at": time.time(),
         "user_id": user["id"],
     }
@@ -1382,26 +1557,46 @@ async def upload_attachment(request: Request, file: Optional[UploadFile] = File(
         "file_id": file_id,
         "filename": file.filename,
         "mimeType": file.content_type,
-        "size": len(content),
+        "size": total,
     }
 
 
 @app.get("/attachment/{file_id}")
-async def get_attachment(file_id: str):
-    att = _attachment_store.get(file_id)
+async def get_attachment(file_id: str, request: Request):
+    """JSON payload of an attachment. Two legitimate callers: the signed-in
+    owner, and the MCP server fetching a file to attach to an outgoing email
+    (server-to-server, so it carries the internal secret instead of a cookie)."""
+    presented = request.headers.get("x-internal-secret", "")
+    internal = bool(INTERNAL_API_SECRET) and secrets.compare_digest(presented, INTERNAL_API_SECRET)
+    user = request.session.get("user")
+    if not internal and not user:
+        raise HTTPException(status_code=404, detail="Attachment not found or expired")
+    att = _get_owned_attachment(file_id, None if internal else user["id"])
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found or expired")
     return {"filename": att["filename"], "mimeType": att["mimeType"], "data": att["data"]}
 
 
 @app.get("/attachment-raw/{file_id}")
-async def get_attachment_raw(file_id: str):
-    """Returns the raw file bytes, used by CopilotKit for image previews."""
-    att = _attachment_store.get(file_id)
+async def get_attachment_raw(file_id: str, request: Request):
+    """Raw bytes, used by the browser for image and PDF previews. Owner only.
+    The stored MIME type is attacker-controlled (it comes from the upload's
+    multipart header), so anything outside the inline allowlist is forced to a
+    download instead of being rendered on this origin."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=404, detail="Attachment not found or expired")
+    att = _get_owned_attachment(file_id, user["id"])
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found or expired")
+
     raw = base64.b64decode(att["data"])
-    return Response(content=raw, media_type=att["mimeType"])
+    mime = att["mimeType"] if att["mimeType"] in _INLINE_MIME else "application/octet-stream"
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if mime == "application/octet-stream":
+        safe_name = re.sub(r'[^A-Za-z0-9._ -]', "_", att["filename"])[:100] or "attachment"
+        headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    return Response(content=raw, media_type=mime, headers=headers)
 
 
 if __name__ == "__main__":

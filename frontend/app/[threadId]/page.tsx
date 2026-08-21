@@ -13,7 +13,7 @@ import SettingsModal from "../components/SettingsModal";
 import ApprovalInterrupt from "../components/ApprovalInterrupt";
 import { InterruptProvider } from "../components/InterruptContext";
 import BufferedInput from "../components/BufferedInput";
-import { BRIEFING_PROMPT } from "../lib/briefing";
+import { BRIEFING_PROMPT, PENDING_PROMPT_KEY } from "../lib/briefing";
 
 function CustomAssistantMessage(props: any) {
   const content: string = props.message?.content ?? props.content ?? "";
@@ -26,7 +26,9 @@ function CustomAssistantMessage(props: any) {
 
 interface AttachmentToken { id: string; filename: string; isImage: boolean }
 
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "heic"]);
+// svg is deliberately excluded: it executes script when rendered, and these
+// files are served from our own origin.
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "heic"]);
 function looksLikeImage(filename: string, mimeType?: string): boolean {
   if (mimeType?.startsWith("image/")) return true;
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
@@ -117,7 +119,13 @@ function PdfThumbnail({ src, filename, onClick }: { src: string; filename: strin
     (async () => {
       try {
         const pdfjs: any = await import("pdfjs-dist");
-        pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+        // Served from our own origin rather than a CDN: the worker runs
+      // same-origin with access to the signed-in session, and there was no
+      // integrity pin on the remote copy.
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url
+      ).toString();
         const doc = await pdfjs.getDocument({ url: src, withCredentials: true }).promise;
         if (cancelled) return;
         const page = await doc.getPage(1);
@@ -235,7 +243,7 @@ interface HistoryMessage {
 const HistoryContext = createContext<HistoryMessage[]>([]);
 
 async function uploadAttachment(file: File): Promise<{ type: "url"; value: string; mimeType: string }> {
-  if (file.size > 25 * 1024 * 1024) throw new Error(`"${file.name}" exceeds the 25 MB limit.`);
+  if (file.size > 20 * 1024 * 1024) throw new Error(`"${file.name}" exceeds the 20 MB limit.`);
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${API}/upload-attachment`, {
@@ -267,7 +275,7 @@ function MessagesWithHistory({ messages, inProgress, RenderMessage, AssistantMes
             if (HIDDEN_TOOLS.has(msg.content)) return null;
             return (
               <div key={msg.id} className="px-4 py-1">
-                <ToolCallRenderer name={msg.content} status="complete" args={msg.args} result={msg.result} />
+                <ToolCallRenderer name={msg.content} status="complete" args={msg.args} result={msg.result} toolCallId={msg.id} />
               </div>
             );
           }
@@ -316,10 +324,18 @@ function AutoSend() {
 
   useEffect(() => {
     if (sent.current) return;
-    const prompt = new URLSearchParams(window.location.search).get("prompt");
+    // Read the queued prompt from sessionStorage (written by the home page just
+    // before navigating) and consume it. Reading it from the URL let any link
+    // submit a message as the signed-in user.
+    let prompt: string | null = null;
+    try {
+      prompt = window.sessionStorage.getItem(PENDING_PROMPT_KEY);
+      if (prompt) window.sessionStorage.removeItem(PENDING_PROMPT_KEY);
+    } catch {
+      prompt = null;
+    }
     if (!prompt) return;
     sent.current = true;
-    window.history.replaceState({}, "", window.location.pathname);
 
     const fill = (retries = 20) => {
       const textarea = document.querySelector(".copilotKitInput textarea") as HTMLTextAreaElement | null;

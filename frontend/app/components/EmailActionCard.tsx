@@ -12,6 +12,7 @@ interface SendArgs {
   body?: string;
   msg_id?: string;
   attachments?: AttachmentArg[];
+  attachment_ids?: string[];
 }
 
 interface Props {
@@ -42,6 +43,14 @@ function StatusBadge({ status, result, successLabel = "Sent" }: { status: string
 
 export default function EmailActionCard({ args, status, result, label, icon, pendingLabel = "Sending…", successLabel = "Sent" }: Props) {
   const pending = status !== "complete";
+
+  // The tool parameter is attachment_ids; args.attachments was never populated,
+  // so an approval card could show a short note while silently carrying a file.
+  // Ids are shown when that is all we have, so the count is at least visible.
+  const attachmentLabels: string[] =
+    args.attachments?.map((a) => a.filename).filter(Boolean) ??
+    args.attachment_ids?.map((id) => `Attached file ${String(id).slice(0, 8)}`) ??
+    [];
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
@@ -88,13 +97,13 @@ export default function EmailActionCard({ args, status, result, label, icon, pen
             </pre>
           </div>
         )}
-        {args.attachments && args.attachments.length > 0 && (
+        {attachmentLabels.length > 0 && (
           <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-700/60">
             <p className="text-xs font-medium text-gray-400 dark:text-gray-500 mb-2">Attachments</p>
             <div className="flex flex-wrap gap-1.5">
-              {args.attachments.map((att, i) => (
+              {attachmentLabels.map((label, i) => (
                 <span key={i} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 dark:bg-gray-700 text-xs text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600">
-                  📎 <span className="max-w-[140px] truncate">{att.filename}</span>
+                  <span className="max-w-[180px] truncate">{label}</span>
                 </span>
               ))}
             </div>

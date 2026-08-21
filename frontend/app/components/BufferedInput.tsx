@@ -53,7 +53,7 @@ export default function BufferedInput({
 
   const submit = useCallback(async () => {
     // Read the textarea's live DOM value, not just React `text` state. A
-    // programmatic fill (AutoSend for ?prompt= links / suggestion chips) sets
+    // programmatic fill (AutoSend for the queued first message) sets
     // .value and dispatches Enter before React's onChange has synced `text`, so
     // reading state alone would send nothing. The DOM value is the source of
     // truth and covers both typed and injected input.

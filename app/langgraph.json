@@ -1,9 +1,0 @@
-{
-  "$schema": "https://langgra.ph/schema.json",
-  "dependencies": ["."],
-  "graphs": {
-    "emailing_agent": "emailing_agent:email_assistant"
-  },
-  "env": "../.env",
-  "image_distro": "wolfi"
-}

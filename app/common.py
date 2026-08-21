@@ -27,6 +27,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from pydantic import BaseModel, Field
 from langgraph.types import interrupt
 from langgraph.errors import GraphInterrupt
 
@@ -75,6 +76,9 @@ DEFAULT_CHAT_MODELS = {
 # Providers for which the app ships a shared developer key, so a user can pick
 # them without pasting their own key. Maps provider -> env var holding the key.
 # Groq powers the default chat; Google's free tier also powers semantic memory.
+# Upper bound for user-writable preference text that is echoed into the prompt.
+_PREF_TEXT_MAX = 400
+
 SHARED_CHAT_KEYS = {
     "groq": "GROQ_API_KEY",
     "google_genai": "GOOGLE_API_KEY",
@@ -155,11 +159,7 @@ SYSTEM_PROMPT = Template(
 
     PROGRESS UPDATES: Right before you call an email or scheduling tool (reading, searching, sending, replying, drafting, deleting, scheduling), first send the user ONE short line of about 5 to 8 words saying what you are about to do, for example "Checking your inbox now.", "Drafting that reply.", or "Scheduling it for you.". Then call the tool. Use only one such line per action, keep it natural, and do not narrate background memory operations or repeat the line after the tool finishes unless you have a real result to share.
 
-    EMAIL TRIAGE: Whenever you read or search emails (unless the user is looking for a specific email or asks a narrow question), classify the results before presenting them. Group emails into:
-    - Needs immediate response (time-sensitive, direct questions, deadlines today or tomorrow)
-    - Needs action (tasks, requests, follow-ups that are not urgent)
-    - FYI only (newsletters, notifications, confirmations, no reply needed)
-    Keep the triage brief and scannable. Lead with the urgent group. Skip empty groups. If there is only one email, still label it.
+    EMAIL TRIAGE: Whenever you read or search emails (unless the user is looking for a specific email or asks a narrow question), triage the results by calling present_triage with one item per email: category "immediate" (time-sensitive, direct questions, deadlines today or tomorrow), "action" (tasks, requests, follow-ups that are not urgent), or "fyi" (newsletters, notifications, confirmations, no reply needed), each with a reason of at most 12 words. The card is shown to the user, so NEVER repeat the classification as text or markdown lists. After the card, write only one or two conversational sentences that lead with the single most urgent email (who it is from, why it matters) and offer to help with it. If nothing is urgent, say the inbox looks calm. If there is only one email, still triage it.
 
     TIME, SEARCH, AND SCHEDULING:
     - Tools: get_current_time (user's current local time), resolve_location (a city/country's exact IANA timezone), web_search (real-world facts like business hours), convert_time (DST-aware timezone conversion). Never guess the current time, a timezone, or a place's hours, and never do timezone math in your head, use these tools.
@@ -377,6 +377,52 @@ def web_search(query: str, max_results: int = 5) -> str:
         return f"Web search failed: {e}. Tell the user you could not look that up right now."
 
 
+class TriageItem(BaseModel):
+    """One triaged email for the on-screen triage card."""
+    # Plain str, not an enum: Groq validates tool calls strictly against the
+    # schema, so a model emitting "Immediate" against a lowercase enum would
+    # fail the whole call. We normalize instead.
+    category: str = Field(description='One of: "immediate", "action", "fyi"')
+    sender: str
+    subject: str
+    reason: str
+
+
+_TRIAGE_ALIASES = {
+    "immediate": "immediate", "urgent": "immediate", "critical": "immediate",
+    "action": "action", "task": "action", "follow-up": "action", "followup": "action",
+    "fyi": "fyi", "info": "fyi", "informational": "fyi", "newsletter": "fyi",
+}
+
+
+def normalize_triage_category(value: str) -> str:
+    return _TRIAGE_ALIASES.get(str(value).strip().lower(), "")
+
+
+def present_triage(items: list[TriageItem]) -> str:
+    """Display the visual email triage card in the chat UI.
+
+    Call this right after reading or searching emails whenever you are triaging
+    or briefing (not when the user asked for one specific email). Pass one item
+    per email with category "immediate" (time-sensitive, direct questions,
+    deadlines today or tomorrow), "action" (tasks, requests, non-urgent
+    follow-ups), or "fyi" (newsletters, notifications, confirmations, no reply
+    needed). sender is the display name, subject the email subject, and reason
+    a short phrase (12 words max) saying why it landed in that category. The
+    card is rendered for the user automatically; do not repeat the same
+    classification as text afterwards."""
+    counts = {"immediate": 0, "action": 0, "fyi": 0}
+    for it in items:
+        raw = it.category if isinstance(it, TriageItem) else str(it.get("category", ""))
+        cat = normalize_triage_category(raw)
+        if cat in counts:
+            counts[cat] += 1
+    return (
+        f"Triage card displayed ({len(items)} emails: "
+        f"{counts['immediate']} immediate, {counts['action']} action, {counts['fyi']} fyi)."
+    )
+
+
 def resolve_location(place: str) -> str:
     """Resolve a city, town, or country to its country and IANA time zone.
 
@@ -517,9 +563,12 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         )
 
 
+    # The authenticated owner, captured so a model-supplied argument can never
+    # decide whose mailbox a scheduled job belongs to.
+    _owner_id = user_id
+
     def bound_schedule_send_email(
             to: str, subject: str, body: str,
-            user_id: str = "tester-user-001",
             minutes_from_now: Optional[int] = None,
             hours_from_now: Optional[int] = None,
             days_from_now: Optional[int] = None,
@@ -543,7 +592,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
             days_from_now=days_from_now, day_string=day_string,
             at_year=at_year, at_month=at_month, at_day=at_day,
             at_hour=at_hour, at_minute=at_minute, at_second=at_second,
-            user_id=user_id, timezone=user_tz,
+            user_id=_owner_id, timezone=user_tz,
             google_token=encrypt_payload(google_token) if google_token else None,
             azure_token=encrypt_payload(azure_token) if azure_token else None,
             default_provider=prefs.get("default_provider", "google"),
@@ -551,7 +600,6 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
 
     def bound_schedule_recurring_email(
             to: str, subject: str, body: str,
-            user_id: str = "tester-user-001",
             hour: Optional[int] = None,
             minute: Optional[int] = None,
             second: Optional[int] = None,
@@ -561,7 +609,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
     ):
         """Schedules a recurring email using cron syntax. All time values are interpreted in the user's local timezone. day_of_week accepts: 'mon', 'tue', 'mon-fri', '1,3,5' (0=Monday). Returns a success or failure message."""
         return schedule_recurring_email(
-            to=to, subject=subject, body=body, user_id=user_id,
+            to=to, subject=subject, body=body, user_id=_owner_id,
             timezone=user_tz,
             hour=hour, minute=minute, second=second,
             day_of_week=day_of_week, day=day, month=month,
@@ -620,6 +668,32 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
             for bool_field in ("include_signature", "auto_adjust_tone", "include_thread_context"):
                 if bool_field in updates and not isinstance(updates[bool_field], bool):
                     return f"Invalid value for '{bool_field}'. Must be true or false."
+
+            # These values are read back into the system prompt on every future
+            # request, so unbounded free text here is a way to plant standing
+            # instructions. Cap length, and keep newlines out of the one-line
+            # fields so a value cannot open a new directive of its own.
+            if "default_provider" in updates:
+                linked = updates["default_provider"]
+                if (linked == "google" and not google_token) or (linked == "microsoft" and not azure_token):
+                    return (
+                        f"Cannot set default_provider to '{linked}': that account is not connected. "
+                        "Ask the user to connect it in Settings first."
+                    )
+
+            for text_field in ("language", "tone", "writing_style", "sender_name",
+                               "organization_name", "preferred_greeting", "signature"):
+                if text_field not in updates:
+                    continue
+                val = updates[text_field]
+                if not isinstance(val, str):
+                    return f"Invalid value for '{text_field}'. Must be text."
+                if len(val) > _PREF_TEXT_MAX:
+                    return f"Invalid value for '{text_field}'. Keep it under {_PREF_TEXT_MAX} characters."
+                # signature is the only field where multi-line is legitimate
+                if text_field != "signature" and len(val.splitlines()) > 1:
+                    return f"Invalid value for '{text_field}'. It must be a single line."
+                updates[text_field] = val.strip()
 
             set_fields = {f"preferences.{k}": v for k, v in updates.items()}
             db["users"].update_one({"_id": ObjectId(user_id)}, {"$set": set_fields})
@@ -775,12 +849,14 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
     extra_tools = [
         bound_schedule_send_email, bound_schedule_recurring_email, update_email_settings,
         remember_user_fact, forget_memory, get_current_time, convert_time, web_search,
-        resolve_location,
+        resolve_location, present_triage,
     ]
     # The everyday inbox actions almost every session uses. Kept always loaded so
     # common tasks (read, search, send, reply, draft) need no extra load step,
     # which also makes weaker models more reliable. Everything else is deferred.
-    ALWAYS_ON = {"read_emails", "search_emails", "send_email", "reply_to_email", "draft_email"}
+    # present_triage is always-on because the inbox briefing must render its card
+    # without a load_tools round trip.
+    ALWAYS_ON = {"read_emails", "search_emails", "send_email", "reply_to_email", "draft_email", "present_triage"}
     pool = [coerce_tool(t) for t in (mcp_tools + extra_tools)]
     always_on_tools = [t for t in pool if t.name in ALWAYS_ON]
     catalog_tools = [t for t in pool if t.name not in ALWAYS_ON]
@@ -860,6 +936,10 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
             decision = interrupt({
                 "type": "approval",
                 "tool": tool_name,
+                # The frontend matched pending approvals on tool NAME alone, so a
+                # replayed history card for the same tool could grow live buttons
+                # bound to a different call. Correlate on the call id instead.
+                "tool_call_id": request.tool_call.get("id", ""),
                 "args": request.tool_call.get("args", {}),
             })
             approved = isinstance(decision, dict) and decision.get("approved")
@@ -905,4 +985,20 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
 
 # Tools that send mail or destroy data. These pause for explicit human approval
 # before running. Reads, searches, and drafts stay frictionless.
-SENSITIVE_TOOLS = {"send_email", "reply_to_email", "send_draft", "delete_email"}
+# Tools that pause for human approval. The scheduling tools belong here because
+# they send REAL mail later, outside the agent graph, with no human present, so
+# they were previously the one send path with no approval card at all.
+# download_attachment writes a file, and update_email_settings persists text
+# that is read back into every future system prompt.
+# archive_email and toggle_label are deliberately NOT gated: both are reversible
+# and used in bulk, so gating them would mean an approval card per message.
+SENSITIVE_TOOLS = {
+    "send_email",
+    "reply_to_email",
+    "send_draft",
+    "delete_email",
+    "bound_schedule_send_email",
+    "bound_schedule_recurring_email",
+    "download_attachment",
+    "update_email_settings",
+}

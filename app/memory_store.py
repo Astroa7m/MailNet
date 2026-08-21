@@ -183,12 +183,22 @@ def list_memories(user_id: str, *, provider=None, api_key=None) -> list:
         return []
 
 
-def delete_memory(memory_id: str, *, provider=None, api_key=None) -> bool:
-    """Delete a single memory by id. Returns True on success."""
+def delete_memory(memory_id: str, *, provider=None, api_key=None, user_id: str = None) -> bool:
+    """Delete a single memory by id. Returns True on success.
+
+    When user_id is given the memory is confirmed to belong to that user first:
+    ids are shared across one collection, so deleting by raw id alone would let
+    a caller remove another user's memory."""
     mem = _get_memory(provider, api_key)
     if mem is None:
         return False
     try:
+        if user_id is not None:
+            owned = mem.get_all(filters={"user_id": user_id}, top_k=500)
+            items = owned.get("results", owned) if isinstance(owned, dict) else owned
+            if not any(str(it.get("id")) == str(memory_id) for it in (items or [])):
+                log.warning("delete refused: memory %s not owned by %s", memory_id, user_id)
+                return False
         mem.delete(memory_id=memory_id)
         return True
     except Exception as e:
@@ -237,7 +247,7 @@ def recall(user_id: str, query: str, limit: int = 5, *, provider=None, api_key=N
     if mem is None:
         return ""
     try:
-        res = mem.search(query, filters={"user_id": user_id}, limit=limit)
+        res = mem.search(query, filters={"user_id": user_id}, top_k=limit)
         items = res.get("results", res) if isinstance(res, dict) else res
         facts = [it.get("memory", "") for it in items if it.get("memory")]
         log.info("recall(user=%s, query=%r) -> %d facts", user_id, query, len(facts))

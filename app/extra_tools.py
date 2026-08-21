@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# The scheduler service authenticates callers with a shared secret; it used to
+# accept whatever user_id a request claimed.
+SCHEDULER_SECRET = os.getenv("SCHEDULER_SECRET", "")
+
+
+def _scheduler_headers() -> dict:
+    return {"x-scheduler-secret": SCHEDULER_SECRET} if SCHEDULER_SECRET else {}
+
+
 schedule_protocol = os.getenv("SCHEDULE_PROTOCOL")
 schedule_host = os.getenv("SCHEDULE_HOST")
 schedule_port = os.getenv("SCHEDULE_PORT")
@@ -99,7 +108,7 @@ def schedule_send_email(
         at_hour: Optional[int] = None,
         at_minute: Optional[int] = None,
         at_second: Optional[int] = None,
-        user_id: str = "tester-user-001",
+        user_id: str = "",
         timezone: str = "UTC",
         google_token: Optional[str] = None,
         azure_token: Optional[str] = None,
@@ -131,13 +140,11 @@ def schedule_send_email(
         "body": body,
         "dt": dt.isoformat(),
         "user_id": user_id,
-        "google_token": google_token,
-        "azure_token": azure_token,
         "default_provider": default_provider,
     }
 
     try:
-        response = requests.post(endpoint, json=json_payload)
+        response = requests.post(endpoint, json=json_payload, headers=_scheduler_headers(), timeout=15)
         response.raise_for_status()
         return f"Scheduled successfully. The email will be sent at {dt.strftime('%Y-%m-%d %H:%M %Z')}"
     except Exception as e:
@@ -149,7 +156,7 @@ def schedule_recurring_email(
         to: str,
         subject: str,
         body: str,
-        user_id: str = "tester-user-001",
+        user_id: str = "",
         timezone: str = "UTC",
         hour: Optional[int] = None,
         minute: Optional[int] = None,
@@ -176,8 +183,6 @@ def schedule_recurring_email(
         "user_id": user_id,
         "timezone": timezone,
         "default_provider": default_provider,
-        "google_token": google_token,
-        "azure_token": azure_token,
     }
     if hour is not None:
         payload["hour"] = hour
@@ -194,7 +199,7 @@ def schedule_recurring_email(
 
     response = None
     try:
-        response = requests.post(endpoint, json=payload)
+        response = requests.post(endpoint, json=payload, headers=_scheduler_headers(), timeout=15)
         response.raise_for_status()
         return f"Recurring email scheduled successfully. Job ID: {response.json().get('job_id')}"
     except Exception as e:

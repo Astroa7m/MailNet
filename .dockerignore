@@ -1,0 +1,57 @@
+# dirs to exclude (each has its own build context)
+frontend/
+mcp-server/
+
+# secrets & tokens
+.env
+google_credentials.json
+google_token.json
+azure_token.json
+token.pickle
+email_client/graph_token.json
+graph_token.json
+
+# python
+**/__pycache__/
+**/*.pyc
+
+# chainlit / IDE
+.chainlit/
+chainlit.md
+.idea/
+.claude/
+
+# git
+.git/
+.gitignore
+
+# misc
+node_modules/
+.next/
+events/
+email_settings.json
+
+
+# launch video project (Remotion, huge node_modules)
+promo/
+
+# nested node_modules anywhere
+**/node_modules/
+
+# python venvs
+.venv/
+**/.venv/
+
+# playwright artifacts & screenshots
+.playwright-mcp/
+*.png
+
+# internal notes: these were being copied into the published image, which is
+# public on Docker Hub. The audit notes in particular listed known weaknesses.
+plan to fix.md
+CHEATSHEET.md
+ui_plan.md
+test_ddos.py
+README.md
+assets/
+deploy/

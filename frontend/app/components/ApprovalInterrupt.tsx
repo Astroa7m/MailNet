@@ -29,7 +29,7 @@ function InterruptBridge({ event, resolve }: { event: any; resolve: (r: any) => 
   const val = parseValue(event);
 
   useEffect(() => {
-    setPending({ tool: val.tool ?? "", resolve });
+    setPending({ tool: val.tool ?? "", toolCallId: val.tool_call_id ?? "", resolve });
     return () => setPending(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -44,10 +44,6 @@ react-app/dist/
 __pycache__/
 *.pyc
 /CHEATSHEET.md
-/mcp-server/.dockerignore
-/frontend/.dockerignore
-/.dockerignore
-/mcp-server/.dockerignore
 .playwright-mcp/
 test-login.png
 
@@ -56,3 +52,8 @@ test-login.png
 
 # launch video project (local only)
 /promo/
+
+# NOTE: the .dockerignore files are intentionally TRACKED. They were ignored,
+# which meant anyone cloning this repo and running the documented
+# 'docker compose up --build' built with no ignore file at all and copied
+# their own .env and credential files into the image.

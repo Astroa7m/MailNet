@@ -1,7 +1,11 @@
 services:
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -12,13 +16,14 @@ services:
     image: astroa7m/mailnet-mcp:latest
     build:
       context: ./mcp-server
-    ports:
-      - "9111:9111"
     env_file: .env
     environment:
       MCP_HOST: "0.0.0.0"
       API_SERVER_URL: http://api:8002
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
 
   scheduler:
     image: astroa7m/mailnet-scheduler:latest
@@ -41,6 +46,9 @@ services:
       mcp:
         condition: service_started
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
 
   api:
     image: astroa7m/mailnet-api:latest
@@ -48,14 +56,14 @@ services:
       context: .
       dockerfile: app/Dockerfile
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379
       MAILNET_SERVER_URL: http://mcp:9111/mcp
       SCHEDULE_HOST: scheduler
     working_dir: /app/app
-    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8002"]
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8002", "--proxy-headers", "--forwarded-allow-ips", "*"]
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -67,6 +75,9 @@ services:
       scheduler:
         condition: service_started
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
 
   frontend:
     image: astroa7m/mailnet-frontend:latest
@@ -75,10 +86,13 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8002}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       FASTAPI_URL: http://api:8002/agent
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8002}
     depends_on:
       - api
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }

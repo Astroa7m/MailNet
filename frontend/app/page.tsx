@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useSidebar } from "./components/SidebarContext";
 import SettingsModal from "./components/SettingsModal";
 import { API } from "./lib/api";
-import { BRIEFING_PROMPT } from "./lib/briefing";
+import { BRIEFING_PROMPT, PENDING_PROMPT_KEY } from "./lib/briefing";
 
 const SUGGESTIONS = [
   {
@@ -122,7 +122,12 @@ export default function Home() {
       router.push(`/${id}`);
       return;
     }
-    router.push(`/${id}?prompt=${encodeURIComponent(combined)}`);
+    try {
+    window.sessionStorage.setItem(PENDING_PROMPT_KEY, combined);
+  } catch {
+    // storage unavailable (private mode): fall through, the thread just opens empty
+  }
+  router.push(`/${id}`);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

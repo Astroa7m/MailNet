@@ -3,6 +3,10 @@ import { createContext, useContext, useRef, useState } from "react";
 
 export interface PendingInterrupt {
   tool: string;
+  // Correlates the approval with the exact paused tool call. Matching on tool
+  // name alone meant a replayed history card for the same tool could show live
+  // approval buttons wired to a different call.
+  toolCallId?: string;
   resolve: (r: any) => void;
 }
 
