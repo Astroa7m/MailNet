@@ -8,13 +8,25 @@ disk, which is how it once locked up hard enough to refuse SSH.
 
 ### 1. Rotate the Azure client secret
 
-The MCP server used to print decrypted Microsoft tokens, including refresh
-tokens, to stdout on every Outlook call, and container logs were uncapped. Treat
-every Microsoft token issued before this release as exposed.
+To be precise about what leaked: `AZURE_SECRET_VALUE` itself was never printed.
+What the MCP server printed on every Outlook call was `azure_token`, the signed
+in user's decrypted token payload, which contains their refresh token. Container
+logs were uncapped, so those accumulated indefinitely.
+
+Rotating the client secret is still the fix, and the reason is worth stating.
+A Microsoft refresh token cannot be redeemed on its own: exchanging it for an
+access token requires `client_id` plus `client_secret`. Rotating the secret is
+therefore the only way to invalidate every already-leaked refresh token at once,
+short of each user revoking consent individually.
+
+Whether it is urgent depends on who could read those logs. If that is only the
+server operator and the logs never left the box, real exposure is small. The
+argument for doing it now anyway is cost: rotating forces Outlook users to
+reconnect once, which is free before launch and a support burden after it.
 
 In the Azure portal, under the app registration, create a new client secret,
-then update `AZURE_SECRET_VALUE` in the server `.env`. Outlook users reconnect
-their account once. Delete the old secret after the new one is confirmed working.
+then update `AZURE_SECRET_VALUE` in the server `.env`. Delete the old secret
+once the new one is confirmed working.
 
 ### 2. Add the two new secrets to the server `.env`
 
