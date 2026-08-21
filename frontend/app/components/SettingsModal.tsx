@@ -185,10 +185,20 @@ const TABS = [
   { id: "account", label: "Account" },
   { id: "approvals", label: "Approvals" },
   { id: "memories", label: "Memories" },
+  { id: "scheduled", label: "Scheduled" },
   { id: "contribute", label: "Contribute" },
 ];
 
 interface MemoryItem { id: string; memory: string; created_at?: string; }
+
+interface ScheduledJob {
+  job_id: string;
+  to: string;
+  subject: string;
+  type: "one_time" | "recurring";
+  trigger: string;
+  next_run_time: string | null;
+}
 
 // ── SelectOrOther ───────────────────────────────────────────────────────────
 
@@ -283,6 +293,9 @@ export default function SettingsModal({
   const [embedCheck, setEmbedCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [activeTab, setActiveTab] = useState("general");
   const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [jobs, setJobs] = useState<ScheduledJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsError, setJobsError] = useState("");
   const [memLoading, setMemLoading] = useState(false);
 
   const hasGoogle = providers.includes("google");
@@ -519,6 +532,54 @@ export default function SettingsModal({
   async function deleteMemory(id: string) {
     setMemories((m) => m.filter((x) => x.id !== id));
     try { await fetch(`${API}/memories/${id}`, { method: "DELETE", credentials: "include" }); } catch { /* best effort */ }
+  }
+
+  // Load scheduled emails the first time the Scheduled tab is opened.
+  useEffect(() => {
+    if (open && activeTab === "scheduled") loadJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, activeTab]);
+
+  async function loadJobs() {
+    setJobsLoading(true);
+    setJobsError("");
+    try {
+      const r = await fetch(`${API}/schedules`, { credentials: "include", cache: "no-store" });
+      if (!r.ok) throw new Error(String(r.status));
+      const d = await r.json();
+      setJobs(d.jobs || []);
+    } catch {
+      setJobs([]);
+      setJobsError("Couldn't load your scheduled emails. Try again in a moment.");
+    } finally {
+      setJobsLoading(false);
+    }
+  }
+
+  async function cancelJob(jobId: string) {
+    const previous = jobs;
+    setJobs((j) => j.filter((x) => x.job_id !== jobId));
+    try {
+      const r = await fetch(`${API}/schedules/${encodeURIComponent(jobId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!r.ok) throw new Error(String(r.status));
+    } catch {
+      // Put the row back rather than implying a send was cancelled when it was not.
+      setJobs(previous);
+      setJobsError("Couldn't cancel that email. It is still scheduled.");
+    }
+  }
+
+  function formatRun(iso: string | null) {
+    if (!iso) return "Not scheduled";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
+      weekday: "short", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit",
+    });
   }
 
   async function clearAllMemories() {
@@ -992,6 +1053,60 @@ export default function SettingsModal({
                         <button
                           onClick={() => deleteMemory(m.id)}
                           aria-label="Delete memory"
+                          className="shrink-0 text-gray-300 hover:text-red-500 dark:text-gray-600 dark:hover:text-red-400 transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Scheduled */}
+              <div className={activeTab === "scheduled" ? "" : "hidden"}>
+                <div className="flex items-center justify-between">
+                  <SectionHeader title="Scheduled emails" />
+                  <button
+                    onClick={loadJobs}
+                    className="text-xs text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mb-3 leading-relaxed">
+                  Emails MailNet is holding to send later, including recurring ones. Cancel any you no longer want sent.
+                </p>
+                {jobsError && (
+                  <p className="text-xs text-red-500 dark:text-red-400 mb-3">{jobsError}</p>
+                )}
+                {jobsLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                ) : jobs.length === 0 ? (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 py-6 text-center">Nothing scheduled right now.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {jobs.map((j) => (
+                      <li key={j.job_id} className="flex items-start justify-between gap-3 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm text-gray-700 dark:text-gray-200 leading-snug truncate">
+                            {j.subject || "(no subject)"}
+                          </p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
+                            To {j.to || "(no recipient)"}
+                          </p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                            {j.type === "recurring" ? "Repeats, next " : "Sends "}
+                            {formatRun(j.next_run_time)}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => cancelJob(j.job_id)}
+                          aria-label="Cancel scheduled email"
                           className="shrink-0 text-gray-300 hover:text-red-500 dark:text-gray-600 dark:hover:text-red-400 transition-colors"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

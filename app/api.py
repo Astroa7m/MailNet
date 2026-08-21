@@ -2,6 +2,7 @@ import asyncio
 import base64
 import datetime
 import os
+import requests
 import re
 import secrets
 import sys
@@ -1597,6 +1598,72 @@ async def get_attachment_raw(file_id: str, request: Request):
         safe_name = re.sub(r'[^A-Za-z0-9._ -]', "_", att["filename"])[:100] or "attachment"
         headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
     return Response(content=raw, media_type=mime, headers=headers)
+
+
+# ---------------------------------------------------------------- schedules
+# The scheduler service is not exposed through nginx and authenticates callers
+# with a shared secret, not a user session. These two routes are the only way
+# the browser reaches it: the user id is taken from the session and never from
+# the request, so a caller cannot list or cancel another account's jobs.
+
+_SCHEDULER_BASE = "{}://{}:{}".format(
+    os.getenv("SCHEDULE_PROTOCOL", "http"),
+    os.getenv("SCHEDULE_HOST", "scheduler"),
+    os.getenv("SCHEDULE_PORT", "794"),
+)
+
+
+def _scheduler_headers() -> dict:
+    secret = os.getenv("SCHEDULER_SECRET", "")
+    return {"x-scheduler-secret": secret} if secret else {}
+
+
+@app.get("/schedules")
+@limiter.limit("60/minute")
+async def list_schedules(request: Request):
+    """Pending scheduled emails for the signed-in user."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        resp = await asyncio.to_thread(
+            requests.get,
+            f"{_SCHEDULER_BASE}/jobs",
+            params={"user_id": user["id"]},
+            headers=_scheduler_headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[API] /schedules list failed: {e!r}")
+        raise HTTPException(status_code=503, detail="Scheduling service is unavailable")
+
+
+@app.delete("/schedules/{job_id}")
+@limiter.limit("30/minute")
+async def cancel_schedule(job_id: str, request: Request):
+    """Cancel one of the signed-in user's scheduled emails."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        resp = await asyncio.to_thread(
+            requests.delete,
+            f"{_SCHEDULER_BASE}/jobs/{job_id}",
+            params={"user_id": user["id"]},
+            headers=_scheduler_headers(),
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[API] /schedules cancel failed: {e!r}")
+        raise HTTPException(status_code=503, detail="Scheduling service is unavailable")
+    if resp.status_code == 404:
+        # The scheduler already scopes by user_id, so this covers both "gone"
+        # and "not yours" without telling the caller which.
+        raise HTTPException(status_code=404, detail="No such scheduled email")
+    resp.raise_for_status()
+    return resp.json()
 
 
 if __name__ == "__main__":
