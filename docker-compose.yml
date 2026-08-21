@@ -20,6 +20,14 @@ services:
     environment:
       MCP_HOST: "0.0.0.0"
       API_SERVER_URL: http://api:8002
+    # This container holds the encryption key and every user's mail tokens, and
+    # it processes attachment metadata written by third parties. Nothing it does
+    # needs a writable image layer.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     logging:
       driver: "json-file"

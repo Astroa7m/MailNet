@@ -33,6 +33,23 @@ API to the scheduler, whose routes previously accepted any caller's claimed user
 id. The api, scheduler, and mcp services all read the same `.env`, so one entry
 each is enough.
 
+### 2b. Avoid `$` in any `.env` value
+
+Compose expands `$NAME` inside `.env` values and silently substitutes a blank
+string, so a secret containing a dollar sign reaches the container shorter than
+it is in the file. `CHAINLIT_AUTH_SECRET` is already affected locally, losing 10
+characters. It is harmless today because Chainlit is only mounted when
+`UI_PROVIDER=chainlit`, which is not how this deploys, but any future secret with
+a `$` in it would be quietly weakened the same way.
+
+Generate secrets with `python -c "import secrets;print(secrets.token_urlsafe(32))"`,
+which emits only `A-Za-z0-9_-`, or escape a literal dollar sign as `$$`. Check a
+value actually arrived intact with:
+
+```
+docker-compose exec api python -c "import os;print(len(os.getenv('SESSION_SECRET','')))"
+```
+
 ### 3. Truncate the existing container logs
 
 They hold live credentials from before the fix.

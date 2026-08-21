@@ -576,8 +576,12 @@ export default function SettingsModal({
     if (!iso) return "Not scheduled";
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
+    // Most sends are days away, so the year is noise. Show it only when the run
+    // falls in a different year, where "Mar 4" alone reads as this coming March.
+    const sameYear = d.getFullYear() === new Date().getFullYear();
     return d.toLocaleString(undefined, {
       weekday: "short", month: "short", day: "numeric",
+      ...(sameYear ? {} : { year: "numeric" }),
       hour: "numeric", minute: "2-digit",
     });
   }
