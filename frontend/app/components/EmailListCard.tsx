@@ -1,4 +1,6 @@
 "use client";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { registerEmailList, isCollapsed, subscribe } from "./emailListCollapseStore";
 
 interface Email {
   messageId?: string;
@@ -98,7 +100,18 @@ function EmailCard({ email, index }: { email: Email; index: number }) {
   );
 }
 
-export default function EmailListCard({ result, status }: { result?: string; status: string }) {
+export default function EmailListCard({ result, status, id }: { result?: string; status: string; id?: string }) {
+  // Stable per-card identity so the collapse store can target this exact
+  // instance. Falls back to useId if no toolCallId/msg.id was passed down.
+  const fallbackId = useId();
+  const cardId = id ?? fallbackId;
+  const [manuallyExpanded, setManuallyExpanded] = useState(false);
+  const collapsed = useSyncExternalStore(subscribe, () => isCollapsed(cardId), () => false);
+
+  useEffect(() => {
+    registerEmailList(cardId);
+  }, [cardId]);
+
   if (status !== "complete" || !result) {
     return (
       <div className="flex items-center gap-2 px-4 py-3 text-sm text-gray-400 dark:text-gray-500">
@@ -123,17 +136,31 @@ export default function EmailListCard({ result, status }: { result?: string; sta
     return <p className="text-sm text-gray-400 dark:text-gray-500 px-4 py-3">No emails found.</p>;
   }
 
+  const showList = manuallyExpanded || !collapsed;
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-        <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+      <button
+        type="button"
+        onClick={() => collapsed && setManuallyExpanded((v) => !v)}
+        className={`w-full flex items-center gap-2 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 ${collapsed ? "cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/60" : "cursor-default"}`}
+      >
+        <svg className="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
         </svg>
         <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
           {emails.length} email{emails.length !== 1 ? "s" : ""}
         </span>
-      </div>
-      {emails.map((email, i) => (
+        {collapsed && (
+          <svg
+            className={`w-3.5 h-3.5 text-gray-400 ml-auto transition-transform ${showList ? "rotate-180" : ""}`}
+            fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        )}
+      </button>
+      {showList && emails.map((email, i) => (
         <EmailCard key={email.messageId ?? i} email={email} index={i} />
       ))}
     </div>
