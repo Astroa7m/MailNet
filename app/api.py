@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import base64
 import datetime
 import os
@@ -92,6 +93,33 @@ async def _prewarm():
             log.info("checkpointer pre-warmed")
         except Exception as e:
             log.warning("checkpointer pre-warm skipped: %r", e)
+        try:
+            # Belt and braces for the linking checks in _link_conflict. Both
+            # get_or_create_user and the login flow resolve an account with
+            # find_one({email_field: ...}), which silently picks one document
+            # when several match, so a duplicate address is an account-mixup
+            # waiting to happen.
+            #
+            # Partial, not sparse. A sparse index skips documents missing the
+            # field but still indexes an explicit null, and get_or_create_user
+            # writes google_email=None for a Microsoft signup (and vice versa).
+            # Under a sparse unique index the second such signup would collide
+            # on null and fail. Matching on $type string indexes only real
+            # addresses.
+            from common import db as _db
+            for field in ("google_email", "outlook_email"):
+                await asyncio.to_thread(
+                    functools.partial(
+                        _db["users"].create_index,
+                        field, unique=True, name=f"uniq_{field}",
+                        partialFilterExpression={field: {"$type": "string"}},
+                    )
+                )
+            log.info("unique provider-email indexes ensured")
+        except Exception as e:
+            # Never block startup: an existing duplicate makes this fail, and
+            # the app should still come up so the duplicate can be cleaned up.
+            log.warning("could not ensure unique provider-email indexes: %r", e)
     asyncio.create_task(_warm())
 is_not_using_copilot_kit = os.getenv("UI_PROVIDER", "custom") == "chainlit"
 CHAINLIT_URL = os.getenv("CHAINLIT_URL")
@@ -709,6 +737,36 @@ def _is_admin_id(user_id: Optional[str]) -> bool:
     return ((doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+def _link_conflict(field: str, email: str, current_user_id: str) -> Optional[str]:
+    """Reason this provider email cannot be linked to this account, or None.
+
+    Linking used to $set the address unconditionally, so two user documents
+    could end up carrying the same google_email or outlook_email. Nothing
+    enforced uniqueness, and both the login flow and get_or_create_user resolve
+    accounts with find_one({field: email}), which returns an arbitrary match
+    when there are several. That meant a later sign-in could attach to, or
+    write a refresh token onto, somebody else's document.
+    """
+    other = db["users"].find_one(
+        {field: email, "_id": {"$ne": ObjectId(current_user_id)}},
+        {"_id": 1},
+    )
+    if other:
+        return "already_linked"
+
+    # Admin is resolved by comparing the stored google_email to ADMIN_EMAIL, so
+    # relinking a different Google account silently demotes the owner with no
+    # way to tell from the UI. Refuse instead of failing quietly; changing it
+    # deliberately means changing ADMIN_EMAIL.
+    if field == "google_email" and ADMIN_EMAIL:
+        doc = db["users"].find_one({"_id": ObjectId(current_user_id)}, {"google_email": 1})
+        current = ((doc or {}).get("google_email") or "").lower()
+        if current == ADMIN_EMAIL.lower() and email.lower() != current:
+            return "would_drop_admin"
+    return None
+
+
+
 
 async def _notify_admin_tester_request(requester_email: str):
     if not ADMIN_EMAIL:
@@ -940,7 +998,12 @@ async def auth_google(request: Request):
                 refresh_token = decrypt_payload(user_doc["google_refresh_token"])["token"]
                 google_token_json["refresh_token"] = refresh_token
 
-        # TODO: merge orphan document if another user already has this google_email
+        conflict = _link_conflict("google_email", email, request.session["user"]["id"])
+        if conflict:
+            log.warning("connect google refused for user %s: %s", request.session["user"]["id"], conflict)
+            return RedirectResponse(
+                url=f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}?error={conflict}"
+            )
         db["users"].update_one(
             {"_id": ObjectId(request.session["user"]["id"])},
             {"$set": {"google_email": email}, "$addToSet": {"providers": "google"}}
@@ -1008,7 +1071,12 @@ async def auth_microsoft(request: Request):
             if refresh_token:
                 set_fields["microsoft_refresh_token"] = encrypt_payload({"token": refresh_token})
 
-            # TODO: merge orphan document if another user already has this outlook_email
+            conflict = _link_conflict("outlook_email", email, request.session["user"]["id"])
+            if conflict:
+                log.warning("connect microsoft refused for user %s: %s", request.session["user"]["id"], conflict)
+                return RedirectResponse(
+                    url=f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}?error={conflict}"
+                )
             db["users"].update_one(
                 {"_id": ObjectId(request.session["user"]["id"])},
                 {"$set": set_fields, "$addToSet": {"providers": "microsoft"}}

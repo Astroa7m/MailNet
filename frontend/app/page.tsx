@@ -99,8 +99,17 @@ export default function Home() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("error") === "missing_scopes") {
-      setConnectError("Mail access was not granted. Please allow all permissions when connecting.");
+    const CONNECT_ERRORS: Record<string, string> = {
+      missing_scopes:
+        "Mail access was not granted. Please allow all permissions when connecting.",
+      already_linked:
+        "That mailbox is already connected to a different MailNet account. Sign in to that account instead, or disconnect it there first.",
+      would_drop_admin:
+        "That would move this account off its admin address. Connect the original account, or change ADMIN_EMAIL on the server.",
+    };
+    const message = CONNECT_ERRORS[params.get("error") ?? ""];
+    if (message) {
+      setConnectError(message);
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
