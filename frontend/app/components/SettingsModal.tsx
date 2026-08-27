@@ -278,7 +278,7 @@ export default function SettingsModal({
 
   // AI Models (bring-your-own-key). Keys are write-only from the client: the
   // server never returns them, only whether one is saved (has_key).
-  const [chatProvider, setChatProvider] = useState("groq");
+  const [chatProvider, setChatProvider] = useState("nvidia");
   const [chatModel, setChatModel] = useState("");
   const [chatHasKey, setChatHasKey] = useState(false);
   const [chatKeyInput, setChatKeyInput] = useState("");
@@ -286,7 +286,7 @@ export default function SettingsModal({
   const [embedHasKey, setEmbedHasKey] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [embedKeyInput, setEmbedKeyInput] = useState("");
-  const [aiOriginal, setAiOriginal] = useState({ chatProvider: "groq", chatModel: "", embedProvider: "google" });
+  const [aiOriginal, setAiOriginal] = useState({ chatProvider: "nvidia", chatModel: "", embedProvider: "google" });
   // Live model list + per-slot validation feedback.
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatCheck, setChatCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
@@ -330,7 +330,7 @@ export default function SettingsModal({
           .then((cs) => setConnStatus(cs || {}))
           .catch(() => {});
 
-        const cp = keysData?.chat?.provider || "groq";
+        const cp = keysData?.chat?.provider || "nvidia";
         const cm = keysData?.chat?.model || "";
         const ep = keysData?.embeddings?.provider || "google";
         setChatProvider(cp);
@@ -483,12 +483,12 @@ export default function SettingsModal({
     } catch { /* best effort */ }
     if (slot === "chat") {
       setChatHasKey(false);
-      setChatProvider("groq");
+      setChatProvider("nvidia");
       setChatModel("");
       setChatKeyInput("");
       setChatCheck({ loading: false, error: null });
-      setAiOriginal((a) => ({ ...a, chatProvider: "groq", chatModel: "" }));
-      loadChatModels("groq");
+      setAiOriginal((a) => ({ ...a, chatProvider: "nvidia", chatModel: "" }));
+      loadChatModels("nvidia");
     } else {
       setEmbedHasKey(false);
       setEmbedProvider("google");
@@ -675,6 +675,7 @@ export default function SettingsModal({
                           value={chatProvider}
                           onChange={(e) => { const v = e.target.value; setChatProvider(v); setChatModel(""); setChatModels([]); loadChatModels(v); }}
                         >
+                          <option value="nvidia">NVIDIA (NIM)</option>
                           <option value="groq">Groq</option>
                           <option value="google_genai">Google (Gemini)</option>
                           <option value="openai">OpenAI</option>
@@ -719,9 +720,9 @@ export default function SettingsModal({
                   <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                     Pick a model that supports tool calling (e.g. GPT, Claude, Gemini, Llama 3.3, gpt-oss). Some models like Gemma can't reliably use tools, so actions and memory may not work.
                   </p>
-                  {!["groq", "google_genai"].includes(chatProvider) && !chatHasKey && !chatKeyInput.trim() && (
+                  {!["nvidia", "groq", "google_genai"].includes(chatProvider) && !chatHasKey && !chatKeyInput.trim() && (
                     <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-amber-600 dark:text-amber-500 leading-relaxed">
-                      No key added for this provider. We only host shared keys for Groq and Google, so chat will fall back to the shared Groq model until you add your own {chatProvider === "openai" ? "OpenAI" : chatProvider === "anthropic" ? "Anthropic" : "Ollama Cloud"} key above.
+                      No key added for this provider. We only host shared keys for NVIDIA, Groq and Google, so chat will fall back to the shared default model until you add your own {chatProvider === "openai" ? "OpenAI" : chatProvider === "anthropic" ? "Anthropic" : "Ollama Cloud"} key above.
                     </p>
                   )}
 

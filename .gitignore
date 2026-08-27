@@ -57,3 +57,6 @@ test-login.png
 # which meant anyone cloning this repo and running the documented
 # 'docker compose up --build' built with no ignore file at all and copied
 # their own .env and credential files into the image.
+
+# Eval harness output (ledgers, transcripts, reports)
+results/

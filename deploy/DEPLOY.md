@@ -89,6 +89,36 @@ delete by `_id`.
 Under Network Access, `0.0.0.0/0` should be gone, leaving only the server's
 elastic IP.
 
+### 6. NVIDIA shared chat key (first deploy with the provider chain)
+
+The shared free tier now runs chat on NVIDIA NIM first, failing over to Groq
+and then Gemini. Create a free key at build.nvidia.com (no card) and add it to
+the server `.env`:
+
+```
+NVIDIA_API_KEY=nvapi-...
+```
+
+The value must not contain `$` (see section 2b). Verify it before bringing the
+stack up:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' https://integrate.api.nvidia.com/v1/models -H "Authorization: Bearer $NVIDIA_API_KEY"
+```
+
+Expect 200. Rollback, both restart-only with no rebuild: remove the key from
+`.env`, or set `SHARED_CHAT_CHAIN=groq,google_genai`. Either restores the
+pre-NVIDIA behavior exactly (Groq primary, Gemini failover). Note the
+asymmetry once free memory ships: chat rolls back cleanly, but shared memory
+is NVIDIA-only by design, so it pauses on rollback rather than falling back
+to another provider. That is chosen behavior, not a bug.
+
+After deploying, send one chat message and confirm the active model:
+
+```
+docker-compose logs api | grep -i "failing over\|(shared)"
+```
+
 ## Every deploy
 
 Build and push from the workstation, never on the server:

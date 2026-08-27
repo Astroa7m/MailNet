@@ -26,6 +26,7 @@ from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
+from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel, Field
 from langgraph.types import interrupt
@@ -45,7 +46,27 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
 mongo_client = MongoClient(os.getenv("MONGO_DB_URL"))
 db = mongo_client["MailNet"]
-_checkpointer = MongoDBSaver(mongo_client, db_name="MailNet")
+
+# The checkpointer is built lazily: MongoDBSaver's constructor creates indexes,
+# which opens a real connection, and doing that at import time meant the module
+# could not even be imported (tests, tooling, a container starting before
+# Atlas is reachable) without a live database.
+_checkpointer_inst = None
+
+
+def _get_checkpointer():
+    global _checkpointer_inst
+    if _checkpointer_inst is None:
+        _checkpointer_inst = MongoDBSaver(mongo_client, db_name="MailNet")
+    return _checkpointer_inst
+
+
+def __getattr__(name):
+    # PEP 562: keeps `from common import _checkpointer` working lazily for the
+    # existing call sites in api.py without connecting at import.
+    if name == "_checkpointer":
+        return _get_checkpointer()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 DEFAULT_PREFERENCES = {
     "language": "en",
@@ -66,6 +87,7 @@ DEFAULT_PREFERENCES = {
 # Chat providers the user can pick in Settings → AI Models. Default model per
 # provider is used when the user does not supply a model override.
 DEFAULT_CHAT_MODELS = {
+    "nvidia": "openai/gpt-oss-120b",
     "groq": "openai/gpt-oss-120b",
     "google_genai": "gemini-2.5-flash",
     "openai": "gpt-4o-mini",
@@ -75,23 +97,50 @@ DEFAULT_CHAT_MODELS = {
 
 # Providers for which the app ships a shared developer key, so a user can pick
 # them without pasting their own key. Maps provider -> env var holding the key.
-# Groq powers the default chat; Google's free tier also powers semantic memory.
+# NVIDIA powers the default chat when its key is set, with Groq and Google as
+# the failover hops behind it.
 # Upper bound for user-writable preference text that is echoed into the prompt.
 _PREF_TEXT_MAX = 400
 
 SHARED_CHAT_KEYS = {
+    "nvidia": "NVIDIA_API_KEY",
     "groq": "GROQ_API_KEY",
     "google_genai": "GOOGLE_API_KEY",
 }
 
+# Failover order for the app's shared keys. The first provider whose key is
+# present becomes the default primary; the rest are failover hops, walked in
+# order by the model-error middleware. Operators can reorder or drop providers
+# per deploy without a rebuild, e.g. SHARED_CHAT_CHAIN=groq,google_genai takes
+# NVIDIA out of rotation. Unknown names and providers with no key set are
+# skipped, so simply not setting NVIDIA_API_KEY reproduces the pre-NVIDIA
+# behavior (Groq primary, Gemini failover) exactly.
+_DEFAULT_SHARED_CHAIN = "nvidia,groq,google_genai"
 
-def _build_shared_llm():
-    """The app's default chat model, backed by the owner's shared Groq key.
 
-    max_retries=0 so a rate-limited shared key fails fast and surfaces the
-    "add your own key" message instead of the SDK silently retrying for ~11s
-    (which made every message feel slow when the shared key was throttled)."""
-    return ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="openai/gpt-oss-120b", streaming=True, max_retries=0)
+def _shared_chain() -> list:
+    """Providers from SHARED_CHAT_CHAIN that have a shared key set, in order."""
+    raw = os.getenv("SHARED_CHAT_CHAIN", _DEFAULT_SHARED_CHAIN)
+    return [
+        p.strip() for p in raw.split(",")
+        if p.strip() in SHARED_CHAT_KEYS and os.getenv(SHARED_CHAT_KEYS[p.strip()])
+    ]
+
+
+def _build_shared_llm(provider: str):
+    """A chat model backed by one of the app's shared keys, tuned to fail fast.
+
+    Groq keeps max_retries=0 so a rate-limited shared key fails in about a
+    second and the failover chain advances, instead of the SDK silently
+    retrying for ~11s (which made every message feel slow when the shared key
+    was throttled). ChatNVIDIA has no retry logic at all, so it already fails
+    fast; its free tier can 429 unpredictably (undocumented per-model daily
+    caps), which is exactly why it sits in front of a failover chain. Gemini
+    reuses the generic builder, identical to the old failover path."""
+    key = os.getenv(SHARED_CHAT_KEYS[provider])
+    if provider == "groq":
+        return ChatGroq(api_key=key, model=DEFAULT_CHAT_MODELS["groq"], streaming=True, max_retries=0)
+    return _build_llm(provider, key, DEFAULT_CHAT_MODELS[provider])
 
 
 def _build_llm(provider: str, api_key: str, model: Optional[str] = None):
@@ -119,7 +168,95 @@ def _build_llm(provider: str, api_key: str, model: Optional[str] = None):
         return ChatAnthropic(model=model, api_key=api_key, streaming=True)
     if provider == "ollama_cloud":
         return ChatOpenAI(model=model, api_key=api_key, base_url="https://ollama.com/v1", streaming=True)
+    if provider == "nvidia":
+        # OpenAI-compatible hosted NIM. No streaming= kwarg (ChatNVIDIA has no
+        # such field; extra kwargs are silently ignored, and token streaming
+        # still works because BaseChatModel auto-upgrades to _astream when a
+        # streaming callback is attached, which the agent event stream always
+        # does). No max_retries= either: ChatNVIDIA has no retry logic at all,
+        # so it already fails fast for the failover chain. max_tokens=4096
+        # overrides the package default of 1024, which truncates long email
+        # drafts and can cut tool-call JSON mid-argument.
+        return ChatNVIDIA(api_key=api_key, model=model, max_tokens=4096)
     raise ValueError(f"Unknown chat provider: {provider}")
+
+
+def make_model_error_middleware(fallback_chain: list, using_shared: bool):
+    """Middleware that turns provider failures into friendly messages, walking
+    the shared failover chain first.
+
+    Module-level (not a closure in build_agent) so tests can compose it with
+    fake models and an arbitrary chain without Mongo or network. A fresh
+    instance is created per build to capture that request's chain and tier.
+
+    Semantics, pinned by tests/unit/test_failover_chain.py:
+    - GraphInterrupt always re-raises (HITL approvals must not be swallowed).
+    - Stale-tool errors re-raise at every level so api._safe_run can stream
+      its reset message.
+    - Shared tier: quota AND auth errors walk the chain in order, one try per
+      hop (a misconfigured shared key must not break users while healthy
+      fallbacks exist). A hop failing with any other class stops the walk:
+      do not burn every provider on a request failing for a different reason.
+    - BYOK tier: no walk ever. Auth shows auth_message, quota shows
+      quota_message(False).
+    - Terminal message classifies the LAST error seen: quota gives
+      quota_message; auth on a shared key gives generic_message (auth_message
+      would wrongly tell the user to check their own key when the fault is
+      the deploy's key; the log line carries the truth); anything else gives
+      generic_message.
+    """
+    @wrap_model_call
+    async def handle_model_errors(request, handler):
+        try:
+            return await handler(request)
+        except GraphInterrupt:
+            raise
+        except Exception as e:
+            # A stale-tool error (old checkpoint history references a tool that
+            # is no longer bound, more likely now that tools are loaded on
+            # demand) must propagate so api._safe_run can surface its clean
+            # "start a new conversation" reset stream.
+            msg = str(e).lower()
+            if "not in request.tools" in msg or "tool call validation" in msg:
+                raise
+            kind = classify_provider_error(e)
+            if kind is None:
+                log.exception("chat model error: %r", e)
+                return AIMessage(content=generic_message())
+            if kind == "auth" and not using_shared:
+                log.warning("chat auth error (byok): %r", e)
+                return AIMessage(content=auth_message())
+            last = e
+            for fb_label, fb_llm in (fallback_chain if using_shared else []):
+                log.warning(
+                    "shared chat model failed (%s); failing over to %s: %r",
+                    classify_provider_error(last), fb_label, last,
+                )
+                try:
+                    return await handler(request.override(model=fb_llm))
+                except GraphInterrupt:
+                    raise
+                except Exception as e2:
+                    m2 = str(e2).lower()
+                    if "not in request.tools" in m2 or "tool call validation" in m2:
+                        raise
+                    last = e2
+                    if classify_provider_error(e2) not in ("quota", "auth"):
+                        log.warning("failover %s failed with a non-quota, non-auth error (%r); stopping chain", fb_label, e2)
+                        break
+            last_kind = classify_provider_error(last)
+            if last_kind == "quota":
+                log.warning("chat quota/limit error (shared=%s): %r", using_shared, last)
+                return AIMessage(content=quota_message(using_shared))
+            if last_kind == "auth":
+                if using_shared:
+                    log.warning("shared chat auth error after exhausting the chain: %r", last)
+                    return AIMessage(content=generic_message())
+                return AIMessage(content=auth_message())
+            log.exception("chat model error: %r", last)
+            return AIMessage(content=generic_message())
+
+    return handle_model_errors
 
 
 SYSTEM_PROMPT = Template(
@@ -191,7 +328,7 @@ def content_to_text(content) -> str:
     """Flatten an LLM message's `content` into clean display text, for any provider.
 
     Providers disagree on the shape of assistant content:
-      - Groq / OpenAI / Ollama: a plain string.
+      - NVIDIA / Groq / OpenAI / Ollama: a plain string.
       - Anthropic: a list of blocks like {"type": "text", "text": ...} plus
         non-text blocks (tool_use, thinking).
       - Google Gemini with thinking on: a list whose text parts carry a thinking
@@ -466,18 +603,22 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
                 prefs = user_doc["preferences"]
             api_keys = user_doc.get("api_keys") or {}
 
-    checkpointer = _checkpointer
+    checkpointer = _get_checkpointer()
 
     # Chat model selection, in priority order:
     #   1. The user's own key for their chosen provider (true BYOK).
-    #   2. A shared developer key for that provider, if we have one (Groq and
-    #      Google). This is what makes "switch to Gemini" work without the user
-    #      pasting a key: we fall back to the shared Google key. OpenAI/Anthropic/
-    #      Ollama have no shared key, so without a user key they drop to default.
-    #   3. The default shared Groq model.
+    #   2. A shared developer key for that provider, if we have one (NVIDIA,
+    #      Groq and Google). This is what makes "switch to Gemini" work
+    #      without the user pasting a key. OpenAI/Anthropic/Ollama have no
+    #      shared key, so without a user key they drop to the default.
+    #   3. The first provider in the shared chain (NVIDIA when configured,
+    #      else Groq, matching the pre-NVIDIA default).
     # using_shared drives the wording of any limit/auth message later.
     using_shared = True
-    model_label = "groq/openai/gpt-oss-120b (shared)"
+    _chain = _shared_chain()
+    _default_shared = _chain[0] if _chain else "groq"
+    active_shared = _default_shared
+    model_label = f"{_default_shared}/{DEFAULT_CHAT_MODELS[_default_shared]} (shared)"
     chat_cfg = api_keys.get("chat") or {}
     provider = chat_cfg.get("provider")
     model = chat_cfg.get("model") or (DEFAULT_CHAT_MODELS.get(provider) if provider else None)
@@ -497,31 +638,39 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         elif provider and shared_provider_key:
             llm = _build_llm(provider, shared_provider_key, model)
             using_shared = True
+            # Assigned only after the build succeeds: on a construction error
+            # the except path runs the default primary instead, and
+            # active_shared must name what is actually running or the failover
+            # chain would retry the running provider and skip a real hop.
+            active_shared = provider
             model_label = f"{provider}/{model} (shared)"
         else:
-            llm = _build_shared_llm()
+            llm = _build_shared_llm(_default_shared)
     except Exception as e:
-        log.warning("could not build chat LLM (%r); falling back to shared Groq", e)
-        llm = _build_shared_llm()
+        log.warning("could not build chat LLM (%r); falling back to shared %s", e, _default_shared)
+        llm = _build_shared_llm(_default_shared)
+        using_shared = True
+        active_shared = _default_shared
+        model_label = f"{_default_shared}/{DEFAULT_CHAT_MODELS[_default_shared]} (shared)"
 
-    # Silent failover between the two shared providers: when the active shared
-    # key gets rate-limited mid-request, the error middleware retries the same
-    # request once on the other shared provider before asking the user for
-    # their own key. BYOK users get no failover (it's their key and quota).
-    _fallback_llm = None
-    _fallback_label = ""
+    # Silent failover across the shared providers: when the active shared key
+    # fails mid-request (rate limit, or a misconfigured shared key), the error
+    # middleware retries the same request on the next provider in the chain,
+    # in order, before asking the user for their own key. BYOK users get no
+    # failover: their key, their quota, and silently switching would hide
+    # that their key is limited.
+    _fallback_chain = []  # ordered (label, llm) pairs the middleware walks
     if using_shared:
-        try:
-            active_shared = provider if (provider and shared_provider_key) else "groq"
-            if active_shared != "google_genai" and os.getenv("GOOGLE_API_KEY"):
-                _fallback_label = f"google_genai/{DEFAULT_CHAT_MODELS['google_genai']} (shared failover)"
-                _fallback_llm = _build_llm("google_genai", os.getenv("GOOGLE_API_KEY"), DEFAULT_CHAT_MODELS["google_genai"])
-            elif active_shared == "google_genai" and os.getenv("GROQ_API_KEY"):
-                _fallback_label = "groq/openai/gpt-oss-120b (shared failover)"
-                _fallback_llm = _build_shared_llm()
-        except Exception as e:
-            log.warning("could not build failover model: %r", e)
-            _fallback_llm = None
+        for fb in _chain:
+            if fb == active_shared:
+                continue
+            try:
+                _fallback_chain.append((
+                    f"{fb}/{DEFAULT_CHAT_MODELS[fb]} (shared failover)",
+                    _build_shared_llm(fb),
+                ))
+            except Exception as e:
+                log.warning("could not build failover model %s: %r", fb, e)
 
     # Smart features (memory): the user's own embedding key if saved, else shared Gemini.
     embed_cfg = api_keys.get("embeddings") or {}
@@ -841,7 +990,7 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         )
 
     # Deferred tool loading: instead of sending all tool schemas every call
-    # (which exhausted Groq's free-tier token/minute budget), the model gets a
+    # (which exhausted the shared free tier's token/minute budget), the model gets a
     # small core (search_tools / load_tools / unload_tools), the always-on inbox
     # tools, plus a catalog listing, and loads the long-tail tools on demand. The
     # ToolNode still holds every tool, so execution is unaffected; only the
@@ -885,44 +1034,12 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
     log.debug("system prompt:\n%s", formatted_sys_prompt)
     tools = all_tools
 
-    # Catch provider quota/auth failures from the chat model and turn them into a
-    # friendly assistant message instead of a hard error. Defined here so it can
-    # capture using_shared, which decides whether we say "add your own key".
-    @wrap_model_call
-    async def handle_model_errors(request, handler):
-        try:
-            return await handler(request)
-        except GraphInterrupt:
-            raise
-        except Exception as e:
-            # A stale-tool error (old checkpoint history references a tool that
-            # is no longer bound, more likely now that tools are loaded on
-            # demand) must propagate so api._safe_run can surface its clean
-            # "start a new conversation" reset stream. Swallowing it into a
-            # generic AIMessage here would make that handler dead code.
-            msg = str(e).lower()
-            if "not in request.tools" in msg or "tool call validation" in msg:
-                raise
-            kind = classify_provider_error(e)
-            if kind == "quota":
-                if using_shared and _fallback_llm is not None:
-                    log.warning(
-                        "shared chat model rate-limited; failing over to %s: %r",
-                        _fallback_label, e,
-                    )
-                    try:
-                        return await handler(request.override(model=_fallback_llm))
-                    except GraphInterrupt:
-                        raise
-                    except Exception as e2:
-                        log.warning("failover model also failed (%r); surfacing BYOK message", e2)
-                log.warning("chat quota/limit error (shared=%s): %r", using_shared, e)
-                return AIMessage(content=quota_message(using_shared))
-            if kind == "auth":
-                log.warning("chat auth error: %r", e)
-                return AIMessage(content=auth_message())
-            log.exception("chat model error: %r", e)
-            return AIMessage(content=generic_message())
+    # Catch provider quota/auth failures from the chat model and turn them into
+    # a friendly assistant message instead of a hard error, walking the shared
+    # failover chain first. The logic lives in make_model_error_middleware so
+    # tests can drive it with fake models; a fresh instance per build captures
+    # this request's chain and tier.
+    handle_model_errors = make_model_error_middleware(_fallback_chain, using_shared)
 
     @wrap_tool_call
     async def handle_tool_errors(request, handler):

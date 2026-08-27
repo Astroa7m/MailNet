@@ -2,9 +2,11 @@
 
 Standalone so both the chat path (common.py) and the memory path
 (memory_store.py) can share it without a circular import. The goal is to turn
-any provider's exception (Groq, Google/Gemini, OpenAI, Anthropic, Ollama) into
-one of two user-actionable categories, then build a friendly message that
-points the user to Settings to add their own key.
+any provider's exception (NVIDIA NIM, Groq, Google/Gemini, OpenAI, Anthropic,
+Ollama) into one of two user-actionable categories, then build a friendly
+message that points the user to Settings to add their own key. NVIDIA raises
+plain Exception("[status] title") with no status_code attribute, which is why
+the text fallbacks matter.
 """
 from typing import Optional
 
@@ -19,6 +21,9 @@ _QUOTA_HINTS = (
 )
 
 # Substrings that show up when a key is missing, wrong, or not permitted.
+# "forbidden" covers NVIDIA NIM's plain Exception("[403] Forbidden"), which
+# carries no status_code attribute, so without the hint a 403 classified as
+# None and neither failed over nor explained itself.
 _AUTH_HINTS = (
     "invalid api key",
     "api key not valid",
@@ -28,6 +33,7 @@ _AUTH_HINTS = (
     "permissiondenied",
     "unauthenticated",
     "unauthorized",
+    "forbidden",
     "no auth credentials",
 )
 

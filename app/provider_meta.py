@@ -96,8 +96,30 @@ def _gemini_models(api_key: str) -> list:
         raise ProviderError(classify_provider_error(e) or "error", str(e)[:200])
 
 
+def _nvidia_models(api_key: str) -> list:
+    """Tool-capable NVIDIA hosted chat models.
+
+    NVIDIA's /v1/models endpoint does not say which models support tool
+    calling, but ChatNVIDIA.get_available_models merges the live list with the
+    package's static catalog, which does. MailNet is an agent, so a model
+    without tool support is unusable here and is hidden from the dropdown."""
+    from langchain_nvidia_ai_endpoints import ChatNVIDIA
+    try:
+        models = ChatNVIDIA.get_available_models(api_key=api_key)
+    except Exception as e:
+        raise ProviderError(classify_provider_error(e) or "error", str(e)[:200])
+    return sorted({
+        m.id for m in models
+        if getattr(m, "model_type", None) == "chat"
+        and getattr(m, "supports_tools", False)
+        and _is_chat_model(m.id)
+    })
+
+
 def list_chat_models(provider: str, api_key: str) -> list:
     """Return chat-capable model ids for a provider. Raises ProviderError."""
+    if provider == "nvidia":
+        return _nvidia_models(api_key)
     if provider == "groq":
         return [m for m in _bearer_models(GROQ_MODELS_URL, api_key) if _is_chat_model(m)]
     if provider == "openai":

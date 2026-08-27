@@ -55,3 +55,9 @@ test_ddos.py
 README.md
 assets/
 deploy/
+
+# Test suite and eval results never ship in the image
+tests/
+requirements-dev.txt
+pytest.ini
+results/

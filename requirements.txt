@@ -35,4 +35,9 @@ google-genai==2.8.0
 langchain-google-genai==4.2.4
 langchain-openai==1.2.2
 langchain-anthropic==1.4.4
+# NVIDIA NIM chat (shared primary). Pinned to 1.4.0: the newest release whose
+# langchain-core floor (>=1.2.5) fits the langchain-core==1.4.1 pin above.
+# 1.4.1+ of this package requires langchain-core>=1.4.7, which would force a
+# cascading langchain/langgraph bump. Adds filetype as a transitive dep.
+langchain-nvidia-ai-endpoints==1.4.0
 ddgs==9.14.4

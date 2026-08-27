@@ -538,7 +538,9 @@ else:
         agent = LangGraphAGUIAgent(name="Mailing Agent", description="Helps with everyday mailing tasks", graph=graph)
 
         def _flatten_content(content) -> str:
-            """Flatten multimodal content list to a plain string (Groq only accepts strings)."""
+            """Flatten multimodal content list to a plain string (several
+            providers on the shared chain, Groq and NVIDIA NIM included,
+            only accept string content)."""
             if isinstance(content, str):
                 return content
             if not isinstance(content, list):
@@ -1180,26 +1182,8 @@ async def update_preferences(request: Request):
 
 
 # Bring-your-own-key: which providers are valid for each slot.
-CHAT_PROVIDERS = {"groq", "google_genai", "openai", "anthropic", "ollama_cloud"}
-EMBED_PROVIDERS = {"google", "openai", "ollama"}
-
-# Shared (developer) keys available per provider. Only Groq and Google are
-# provided by the app; for the rest the user must bring their own key.
-SHARED_KEY_ENV = {
-    "groq": "GROQ_API_KEY",
-    "google_genai": "GOOGLE_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "ollama_cloud": "OLLAMA_API_KEY",
-    "google": "GOOGLE_API_KEY",
-    "ollama": "OLLAMA_API_KEY",
-}
-
-
-def _shared_key_for(provider: str) -> Optional[str]:
-    env = SHARED_KEY_ENV.get(provider)
-    return os.getenv(env) if env else None
-
+CHAT_PROVIDERS = {"nvidia", "groq", "google_genai", "openai", "anthropic", "ollama_cloud"}
+EMBED_PROVIDERS = {"nvidia", "google", "openai", "ollama"}
 
 @app.get("/api-keys")
 async def get_api_keys(request: Request):

@@ -1,0 +1,6 @@
+# Test-only dependencies. The production image installs requirements.txt alone
+# (app/Dockerfile), so nothing here ships.
+-r requirements.txt
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-timeout==2.4.0

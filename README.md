@@ -13,12 +13,12 @@ MailNet is a conversational agent built on LangGraph and the Model Context Proto
 ## Highlights
 
 - **Conversational email actions.** Read, search, compose, reply, draft, send, and delete across **Gmail and Outlook** through one interface. Provider differences are hidden behind an MCP server.
-- **Bring your own key, model-agnostic.** Chat runs on **Groq, Google (Gemini), OpenAI, Anthropic, or Ollama Cloud**. Pick a provider, the model list is fetched live, and your key is validated before it is saved. No key? The app falls back to a shared developer key so it works out of the box.
+- **Bring your own key, model-agnostic.** Chat runs on **NVIDIA (NIM), Groq, Google (Gemini), OpenAI, Anthropic, or Ollama Cloud**. Pick a provider, the model list is fetched live, and your key is validated before it is saved. No key? The app falls back to a shared developer key chain (NVIDIA first, then Groq, then Gemini) so it works out of the box.
 - **Semantic memory.** Durable facts about you (recurring contacts, tone, habits) are extracted, embedded, and stored in MongoDB Atlas Vector Search via [mem0](https://github.com/mem0ai/mem0), then recalled to personalize replies. Memories are fully manageable from the UI.
 - **Human in the loop.** Sending, replying, and deleting pause for an inline approval card. Trust an action once with "Don't ask again," or manage auto-approvals in settings.
 - **Scheduling.** One-off and recurring sends handled by a dedicated APScheduler service.
 - **Secure by construction.** OAuth for both providers, per-user sessions, encrypted tokens and BYOK keys at rest (Fernet), per-user data isolation, and rate limiting.
-- **Zero marginal cost.** The default stack runs entirely on free tiers (Groq, Gemini, MongoDB Atlas, Redis), gated behind real OAuth.
+- **Zero marginal cost.** The default stack runs entirely on free tiers (NVIDIA NIM, Groq, Gemini, MongoDB Atlas, Redis), gated behind real OAuth.
 - **Inbox intelligence.** A proactive "Catch me up" briefing that opens with the most urgent email, a triage card that classifies the inbox (needs action / FYI), and a live web-search card for questions that need the internet.
 - **Verifiable claims.** Terms and Privacy pages link to the exact source lines that encrypt tokens and keys; a Contribute tab in Settings points anyone at the code.
 
@@ -67,7 +67,7 @@ flowchart TB
     end
 
     subgraph Graph["Agent  (LangGraph)"]
-        LLM["Model-agnostic LLM<br/>Groq / Google / OpenAI /<br/>Anthropic / Ollama"]
+        LLM["Model-agnostic LLM<br/>NVIDIA / Groq / Google /<br/>OpenAI / Anthropic / Ollama"]
         MW["Middleware<br/>HITL approvals · provider<br/>error handling"]
         TOOLS["Tools<br/>email · schedule · settings · memory"]
     end
@@ -159,7 +159,7 @@ sequenceDiagram
 
 **Agent + backend:** Python, FastAPI, LangGraph (`create_agent` + middleware), langchain, FastMCP, mem0, APScheduler, authlib + MSAL (OAuth), Fernet (encryption), slowapi (rate limiting).
 
-**LLM providers (any one):** Groq, Google Gemini, OpenAI, Anthropic, Ollama Cloud.
+**LLM providers (any one):** NVIDIA NIM, Groq, Google Gemini, OpenAI, Anthropic, Ollama Cloud.
 
 **Frontend:** Next.js 16, React 19, Tailwind CSS 4, CopilotKit with the AG-UI protocol.
 
@@ -175,7 +175,7 @@ MailNet runs as a multi-service Docker Compose stack.
 - Docker and Docker Compose
 - A MongoDB Atlas cluster with Vector Search enabled
 - Google and/or Microsoft OAuth app credentials (setup below)
-- At least one LLM key (a free Groq key is enough to start)
+- At least one LLM key (a free NVIDIA or Groq key is enough to start)
 
 ### Set up the Google OAuth app (Gmail)
 
@@ -214,8 +214,10 @@ FRONTEND_URL=http://localhost:3000
 # ADMIN_EMAIL=you@gmail.com               # receives Gmail tester-access requests
 
 # Shared LLM keys (used until a user adds their own)
-GROQ_API_KEY=...            # default chat
-GOOGLE_API_KEY=...          # semantic memory (embeddings + extraction)
+NVIDIA_API_KEY=...          # default chat primary (free at build.nvidia.com, no card)
+GROQ_API_KEY=...            # chat failover (and the default if NVIDIA_API_KEY is unset)
+GOOGLE_API_KEY=...          # second chat failover; also semantic memory (embeddings + extraction)
+# SHARED_CHAT_CHAIN=nvidia,groq,google_genai   # optional: reorder or drop shared chat providers without a rebuild
 
 # Google OAuth (Gmail)
 GOOGLE_CLIENT_ID=...
