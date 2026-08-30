@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import os
@@ -181,6 +182,16 @@ def _build_llm(provider: str, api_key: str, model: Optional[str] = None):
     raise ValueError(f"Unknown chat provider: {provider}")
 
 
+# Ceiling on a single model call, any provider. ChatNVIDIA's own timeout
+# field only paces 202-polling; its actual POST has no bound, so a wedged
+# NVIDIA endpoint held requests for aiohttp's 300s default (observed live).
+# asyncio.wait_for converts the hang into a TimeoutError, which
+# classify_provider_error treats as quota so the shared chain walks on.
+# Generous enough for a long draft on a slow provider; streaming tokens
+# reach the client while the clock runs.
+MODEL_CALL_TIMEOUT_S = int(os.getenv("MODEL_CALL_TIMEOUT_S", "120"))
+
+
 def make_model_error_middleware(fallback_chain: list, using_shared: bool):
     """Middleware that turns provider failures into friendly messages, walking
     the shared failover chain first.
@@ -208,7 +219,7 @@ def make_model_error_middleware(fallback_chain: list, using_shared: bool):
     @wrap_model_call
     async def handle_model_errors(request, handler):
         try:
-            return await handler(request)
+            return await asyncio.wait_for(handler(request), timeout=MODEL_CALL_TIMEOUT_S)
         except GraphInterrupt:
             raise
         except Exception as e:
@@ -233,7 +244,10 @@ def make_model_error_middleware(fallback_chain: list, using_shared: bool):
                     classify_provider_error(last), fb_label, last,
                 )
                 try:
-                    return await handler(request.override(model=fb_llm))
+                    return await asyncio.wait_for(
+                        handler(request.override(model=fb_llm)),
+                        timeout=MODEL_CALL_TIMEOUT_S,
+                    )
                 except GraphInterrupt:
                     raise
                 except Exception as e2:
@@ -692,11 +706,18 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
         ((user_doc or {}).get("google_email") or "").lower() == _admin_email.lower()
         if user_id else False
     )
-    memory_on = (bool(embed_key) or _is_admin) and prefs.get("memory_enabled") is not False
+    # Memory is free for everyone on the shared NVIDIA key (capped saves/day);
+    # a user's own smart-features key or admin lifts the cap. It is on unless
+    # the user paused it, and off only when no key exists at all.
+    memory_on = (
+        bool(embed_key) or _is_admin or bool(os.getenv("NVIDIA_API_KEY"))
+    ) and prefs.get("memory_enabled") is not False
+    _mem_exempt = bool(embed_key) or _is_admin
     MEMORY_OFF_NOTE = (
-        "Memory is currently turned off for this account. It needs the user's own "
-        "Smart Features key: tell the user they can add one in Settings, AI Models, "
-        "and then enable the memory switch in Settings, Memories."
+        "Memory is currently unavailable or paused for this account. The user "
+        "can turn it on with the memory switch in Settings, Memories; it is "
+        "free to use, and adding their own Smart Features key in Settings, "
+        "AI Models removes the daily save limit."
     )
 
     # Sensitive tools the user has chosen to auto-approve (skip the HITL prompt).
@@ -865,7 +886,8 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
             return "Cannot save memory: no user context."
         if not memory_on:
             return MEMORY_OFF_NOTE
-        return memory_remember(user_id, fact, provider=embed_provider, api_key=embed_key)
+        return memory_remember(user_id, fact, provider=embed_provider, api_key=embed_key,
+                               exempt_from_cap=_mem_exempt)
 
     def get_current_time() -> str:
         """Get the current date and time in the user's local timezone.

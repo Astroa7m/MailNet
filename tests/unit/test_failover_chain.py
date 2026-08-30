@@ -15,6 +15,7 @@ from langgraph.types import Command, interrupt
 from app.common import make_model_error_middleware
 from app.llm_errors import auth_message, generic_message, quota_message
 from tests.stubs.stub_llms import (
+    HangingChatModel,
     RaisingChatModel,
     RecordingChatModel,
     ScriptedChatModel,
@@ -106,6 +107,16 @@ async def test_stale_tool_error_reraises_from_a_hop():
     chain = [("h1", _raising("tool call validation failed: y not in request.tools"))]
     with pytest.raises(Exception, match="not in request.tools"):
         await _run(_raising(), chain)
+
+
+async def test_hanging_primary_times_out_and_fails_over(monkeypatch):
+    """A wedged provider must not hold the turn for minutes: the per-call
+    ceiling fires, classifies as quota, and the chain answers."""
+    import app.common as common
+    monkeypatch.setattr(common, "MODEL_CALL_TIMEOUT_S", 2)
+    hang = HangingChatModel(messages=iter([]))
+    out = await _run(hang, [("groq-hop", _scripted("rescued-by-hop"))])
+    assert out == "rescued-by-hop"
 
 
 async def test_unclassified_primary_error_gives_generic_message():

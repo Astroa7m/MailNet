@@ -50,24 +50,62 @@ def _resolve_message_content(content: Any):
     return None
 
 
+def _make_safe_reasoning_resolver(original):
+    """Harden ag_ui_langgraph's resolve_reasoning_content.
+
+    The library assumes additional_kwargs["reasoning"] is an OpenAI
+    responses-style dict and calls .get("summary") on it. NVIDIA NIM's
+    gpt-oss (harmony format) streams it as a plain STRING, which crashed the
+    whole event stream mid-run with AttributeError('str' has no 'get') and
+    the UI saw "Run ended without emitting a terminal event". Reasoning is
+    internal monologue we never show users anyway, so on any unexpected
+    shape the right behavior is to suppress it, not to die: string-shaped
+    reasoning returns None, and any residual error inside the original
+    resolver is swallowed to None as well."""
+
+    def _safe_resolve_reasoning_content(chunk: Any):
+        try:
+            ak = getattr(chunk, "additional_kwargs", None)
+            if isinstance(ak, dict) and isinstance(
+                ak.get("reasoning", ak.get("reasoning_content")), str
+            ):
+                return None
+            return original(chunk)
+        except Exception as e:
+            log.debug("suppressed malformed reasoning chunk: %r", e)
+            return None
+
+    return _safe_resolve_reasoning_content
+
+
 def apply() -> None:
-    """Patch ag_ui_langgraph's resolve_message_content in every namespace that
-    holds a reference. Safe to call more than once."""
+    """Patch ag_ui_langgraph in every namespace that holds a reference.
+    Safe to call more than once."""
     patched = []
     try:
         import ag_ui_langgraph.utils as _utils
         _utils.resolve_message_content = _resolve_message_content
+        if not getattr(_utils.resolve_reasoning_content, "_mailnet_safe", False):
+            safe = _make_safe_reasoning_resolver(_utils.resolve_reasoning_content)
+            safe._mailnet_safe = True
+            _utils.resolve_reasoning_content = safe
         patched.append("utils")
     except Exception as e:
         log.warning("could not patch ag_ui_langgraph.utils: %r", e)
     try:
         import ag_ui_langgraph.agent as _agent
-        # agent.py did `from .utils import resolve_message_content`, so it has its
-        # own binding that must be overwritten too.
+        # agent.py did `from .utils import ...`, so it has its own bindings
+        # that must be overwritten too.
         if hasattr(_agent, "resolve_message_content"):
             _agent.resolve_message_content = _resolve_message_content
-            patched.append("agent")
+        if hasattr(_agent, "resolve_reasoning_content") and not getattr(
+            _agent.resolve_reasoning_content, "_mailnet_safe", False
+        ):
+            safe = _make_safe_reasoning_resolver(_agent.resolve_reasoning_content)
+            safe._mailnet_safe = True
+            _agent.resolve_reasoning_content = safe
+        patched.append("agent")
     except Exception as e:
         log.warning("could not patch ag_ui_langgraph.agent: %r", e)
     if patched:
-        log.info("patched resolve_message_content in: %s", ", ".join(patched))
+        log.info("patched resolve_message_content + resolve_reasoning_content in: %s", ", ".join(patched))

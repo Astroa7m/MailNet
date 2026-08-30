@@ -273,7 +273,15 @@ async def main():
                     print(f"budget reached ({args.max_calls} calls); stopping. Resume with --resume {run_id}")
                     return
                 print(f"run          {mk}  {sc.id}  #{rep}", flush=True)
-                body = await _run_cell(sc, provider, model, args.dry)
+                try:
+                    # ChatNVIDIA has no client-side timeout, so one wedged
+                    # request would stall the whole sweep. A cell that cannot
+                    # finish in 5 minutes is recorded and retried on --resume.
+                    body = await asyncio.wait_for(
+                        _run_cell(sc, provider, model, args.dry), timeout=300
+                    )
+                except asyncio.TimeoutError:
+                    body = {"status": "error", "error_text": "cell timeout after 300s"}
                 total_calls += (body.get("latency") or {}).get("model_calls", 1)
                 record = {"run_id": run_id, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
                           "model_key": mk, "scenario": sc.id, "repeat": rep, **body}

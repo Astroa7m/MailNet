@@ -1183,7 +1183,9 @@ async def update_preferences(request: Request):
 
 # Bring-your-own-key: which providers are valid for each slot.
 CHAT_PROVIDERS = {"nvidia", "groq", "google_genai", "openai", "anthropic", "ollama_cloud"}
-EMBED_PROVIDERS = {"nvidia", "google", "openai", "ollama"}
+# No "ollama" here: memory embeddings are pinned to the shared 2048-dim index
+# and nomic-embed-text is fixed at 768 dims, so it can no longer participate.
+EMBED_PROVIDERS = {"nvidia", "google", "openai"}
 
 @app.get("/api-keys")
 async def get_api_keys(request: Request):
@@ -1332,10 +1334,11 @@ async def delete_api_key(slot: str, request: Request):
 
 
 def _user_memory_access(user_id: str):
-    """(enabled, provider, key) for semantic memory. Memory is BYOK-only: it
-    needs the user's own smart-features key, except for the admin account.
-    A memory_enabled=False preference pauses it even with a key. Mirrors the
-    gate in build_agent."""
+    """(enabled, provider, key) for semantic memory. Memory is free for every
+    user on the shared NVIDIA key (daily save cap applies); a saved
+    smart-features key switches to BYOK and lifts the cap. A
+    memory_enabled=False preference pauses it either way. Mirrors the gate in
+    build_agent."""
     doc = db["users"].find_one(
         {"_id": ObjectId(user_id)},
         {"api_keys.embeddings": 1, "preferences.memory_enabled": 1, "google_email": 1},
@@ -1348,7 +1351,9 @@ def _user_memory_access(user_id: str):
         except Exception:
             provider = key = None
     is_admin = bool(ADMIN_EMAIL) and (doc.get("google_email") or "").lower() == ADMIN_EMAIL.lower()
-    enabled = (bool(key) or is_admin) and (doc.get("preferences") or {}).get("memory_enabled") is not False
+    enabled = (
+        bool(key) or is_admin or bool(os.getenv("NVIDIA_API_KEY"))
+    ) and (doc.get("preferences") or {}).get("memory_enabled") is not False
     return enabled, provider, key
 
 

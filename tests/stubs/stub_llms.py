@@ -36,6 +36,19 @@ class RaisingChatModel(ScriptedChatModel):
         raise Exception(self.error_message)
 
 
+class HangingChatModel(ScriptedChatModel):
+    """Never returns: simulates a wedged provider endpoint (the live NVIDIA
+    hang held requests for aiohttp's full 300s default)."""
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        import asyncio
+        await asyncio.sleep(3600)
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        import time
+        time.sleep(3600)
+
+
 class RecordingChatModel(ScriptedChatModel):
     """Scripted model that records what it was bound with and asked."""
 

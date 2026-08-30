@@ -17,7 +17,8 @@ OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 OLLAMA_MODELS_URL = "https://ollama.com/v1/models"
 OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"
-OLLAMA_EMBED_URL = "https://ollama.com/v1/embeddings"
+NVIDIA_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
+NVIDIA_EMBED_URL = "https://integrate.api.nvidia.com/v1/embeddings"
 
 _TIMEOUT = 20
 
@@ -97,23 +98,16 @@ def _gemini_models(api_key: str) -> list:
 
 
 def _nvidia_models(api_key: str) -> list:
-    """Tool-capable NVIDIA hosted chat models.
+    """Live NVIDIA hosted chat models, same policy as every other provider.
 
-    NVIDIA's /v1/models endpoint does not say which models support tool
-    calling, but ChatNVIDIA.get_available_models merges the live list with the
-    package's static catalog, which does. MailNet is an agent, so a model
-    without tool support is unusable here and is hidden from the dropdown."""
-    from langchain_nvidia_ai_endpoints import ChatNVIDIA
-    try:
-        models = ChatNVIDIA.get_available_models(api_key=api_key)
-    except Exception as e:
-        raise ProviderError(classify_provider_error(e) or "error", str(e)[:200])
-    return sorted({
-        m.id for m in models
-        if getattr(m, "model_type", None) == "chat"
-        and getattr(m, "supports_tools", False)
-        and _is_chat_model(m.id)
-    })
+    An earlier version filtered to the langchain package's static
+    supports_tools catalog, but that catalog proved stale within months
+    (it listed already-retired models and missed new ones), which shrank the
+    dropdown to a handful of names while NVIDIA hosts dozens. Now the live
+    /v1/models list is used with the shared chat-model blocklist, exactly
+    like Groq and Ollama Cloud; the existing UI hint already tells users to
+    pick a tool-capable model."""
+    return [m for m in _bearer_models(NVIDIA_MODELS_URL, api_key) if _is_chat_model(m)]
 
 
 def list_chat_models(provider: str, api_key: str) -> list:
@@ -143,7 +137,11 @@ def _chat_ping(provider: str, api_key: str, model: Optional[str]) -> None:
 
 
 def _embed_ping(provider: str, api_key: str) -> None:
-    """Make a tiny real embedding call for the smart-features key."""
+    """Make a tiny real embedding call for the smart-features key.
+
+    Models and dims mirror app.memory_store exactly: every provider must be
+    able to write into the shared 2048-dim index. Ollama was removed here for
+    that reason (nomic-embed-text is fixed at 768 dims)."""
     if provider == "google":
         from google import genai
         from google.genai import types
@@ -151,24 +149,24 @@ def _embed_ping(provider: str, api_key: str) -> None:
         client.models.embed_content(
             model="gemini-embedding-001",
             contents="ping",
-            config=types.EmbedContentConfig(output_dimensionality=768),
+            config=types.EmbedContentConfig(output_dimensionality=2048),
         )
         return
     if provider == "openai":
         r = requests.post(
             OPENAI_EMBED_URL,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": "text-embedding-3-small", "input": "ping", "dimensions": 768},
+            json={"model": "text-embedding-3-large", "input": "ping", "dimensions": 2048},
             timeout=_TIMEOUT,
         )
         if r.status_code != 200:
             raise ProviderError(_reason_from_status(r.status_code), f"{r.status_code}: {r.text[:200]}")
         return
-    if provider == "ollama":
+    if provider == "nvidia":
         r = requests.post(
-            OLLAMA_EMBED_URL,
+            NVIDIA_EMBED_URL,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": "nomic-embed-text", "input": "ping"},
+            json={"model": "nvidia/nemotron-3-embed-1b", "input": "ping", "dimensions": 2048},
             timeout=_TIMEOUT,
         )
         if r.status_code != 200:

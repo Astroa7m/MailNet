@@ -733,9 +733,9 @@ export default function SettingsModal({
                         value={embedProvider}
                         onChange={(e) => { const v = e.target.value; setEmbedProvider(v); setEmbedCheck({ loading: false, error: null }); verifyEmbedKey(v); }}
                       >
+                        <option value="nvidia">NVIDIA (NIM)</option>
                         <option value="google">Google (Gemini)</option>
                         <option value="openai">OpenAI</option>
-                        <option value="ollama">Ollama</option>
                       </select>
                       <KeyBadge yours={embedHasKey} />
                     </div>
@@ -1005,34 +1005,35 @@ export default function SettingsModal({
                     </button>
                   )}
                 </div>
-                {/* Memory master switch: BYOK-only, locked without an own key */}
+                {/* Memory master switch: free for everyone on the shared NVIDIA
+                    quota (daily save cap); a saved Smart Features key lifts it. */}
                 <div className="mb-4 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40 px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Memory</span>
                     <div className="flex items-center gap-2">
                       <Toggle
-                        checked={(embedHasKey || isAdmin) && prefs.memory_enabled !== false}
-                        disabled={!embedHasKey && !isAdmin}
+                        checked={prefs.memory_enabled !== false}
                         onChange={(v) => set("memory_enabled", v)}
                       />
                       <span className="text-xs text-gray-400 dark:text-gray-500">
-                        {!embedHasKey && !isAdmin ? "Off" : prefs.memory_enabled !== false ? "On" : "Paused"}
+                        {prefs.memory_enabled !== false ? "On" : "Paused"}
                       </span>
                     </div>
                   </div>
-                  {!embedHasKey && !isAdmin ? (
-                    <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
-                      Memory is off. It runs AI extraction and recall on your conversations, which
-                      MailNet's free shared keys don't cover. To enable it, add your own{" "}
-                      <button type="button" onClick={() => setActiveTab("ai")} className="text-blue-500 hover:underline">
-                        Smart Features key
-                      </button>{" "}
-                      (Google, OpenAI, or Ollama), then flip this switch.
-                    </p>
-                  ) : prefs.memory_enabled !== false ? (
+                  {prefs.memory_enabled !== false ? (
                     <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                       MailNet remembers durable facts about you (recurring contacts, standing
-                      instructions) and recalls them to personalize replies.
+                      instructions) and recalls them to personalize replies. Free on MailNet's
+                      shared quota with a daily save limit{embedHasKey || isAdmin ? ", lifted because you use your own key" : ""}.
+                      {!embedHasKey && !isAdmin && (
+                        <>
+                          {" "}Add your own{" "}
+                          <button type="button" onClick={() => setActiveTab("ai")} className="text-blue-500 hover:underline">
+                            Smart Features key
+                          </button>{" "}
+                          for unlimited saves.
+                        </>
+                      )}
                     </p>
                   ) : (
                     <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">

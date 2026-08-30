@@ -35,6 +35,13 @@ _AUTH_HINTS = (
     "unauthorized",
     "forbidden",
     "no auth credentials",
+    # NVIDIA retires hosted models aggressively ("[410] Gone ... has reached
+    # its end of life"). For a SHARED key that is a deploy misconfiguration
+    # exactly like a revoked key, and classifying it as auth makes the shared
+    # failover chain absorb it instead of surfacing a generic error while
+    # healthy providers sit idle.
+    "end of life",
+    "[410]",
 )
 
 
@@ -45,6 +52,15 @@ def classify_provider_error(exc: Exception) -> Optional[str]:
     .status_code; google exposes .code), then falls back to matching the
     message text so we still catch providers that do not set a code.
     """
+    # A hung or timed-out request is transient capacity trouble, exactly like
+    # a rate limit: for a shared key the right response is to walk the
+    # failover chain, not to surface a generic error while healthy providers
+    # sit idle. Checked by TYPE because asyncio.TimeoutError stringifies to
+    # an empty message. Observed live: NVIDIA's hosted gpt-oss stalling for
+    # the full 300s aiohttp default on agent-sized requests.
+    if isinstance(exc, TimeoutError):
+        return "quota"
+
     code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
     msg = str(exc).lower()
 

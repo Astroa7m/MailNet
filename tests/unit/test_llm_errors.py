@@ -25,6 +25,10 @@ CASES = [
     (Exception("[401] Unauthorized: invalid response from UAM"), "auth"),
     (Exception("[403] Forbidden"), "auth"),
     (Exception("[404] Not Found: model x/y does not exist"), None),
+    # NVIDIA EOL churn: a retired model must classify auth so the SHARED
+    # chain fails over (observed live 2026-08-29: four candidates went 410
+    # within months of the static catalog listing them).
+    (Exception("[410] Gone: The model 'x/y' has reached its end of life"), "auth"),
     # Groq / OpenAI-style SDK errors carry status_code and rich text.
     (_WithStatusCode("Error code: 429 - rate_limit_exceeded", status_code=429), "quota"),
     (_WithStatusCode("invalid api key", status_code=401), "auth"),
@@ -36,6 +40,9 @@ CASES = [
     (Exception("insufficient_quota: add a payment method"), "quota"),
     (Exception("request rejected: unauthorized"), "auth"),
     (Exception("something entirely different broke"), None),
+    # asyncio.TimeoutError stringifies to "": classified by TYPE so a hung
+    # provider walks the shared chain (observed live on NVIDIA gpt-oss).
+    (TimeoutError(), "quota"),
 ]
 
 
