@@ -10,7 +10,14 @@ the text fallbacks matter.
 """
 from typing import Optional
 
-# Substrings that show up in quota / rate-limit errors across providers.
+# Substrings that show up in quota / rate-limit errors across providers,
+# plus transient capacity failures that deserve the same treatment: for a
+# shared key the right response to a hiccuping provider is to walk the
+# failover chain. NVIDIA's hosted endpoint was observed emitting bursts of
+# "[404] Unknown Error" and "[500] Internal server error" for minutes at a
+# time on an otherwise healthy model. Note "[404] unknown error" is
+# deliberately narrower than "[404]": a model-not-found 404 says "Not Found"
+# and still classifies as nothing (a missing model is not transient).
 _QUOTA_HINTS = (
     "resource_exhausted",
     "rate limit",
@@ -18,6 +25,11 @@ _QUOTA_HINTS = (
     "quota",
     "insufficient_quota",
     "too many requests",
+    "internal server error",
+    "[500]",
+    "[502]",
+    "[503]",
+    "[404] unknown error",
 )
 
 # Substrings that show up when a key is missing, wrong, or not permitted.

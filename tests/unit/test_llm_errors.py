@@ -43,6 +43,11 @@ CASES = [
     # asyncio.TimeoutError stringifies to "": classified by TYPE so a hung
     # provider walks the shared chain (observed live on NVIDIA gpt-oss).
     (TimeoutError(), "quota"),
+    # NVIDIA transient bursts observed live 2026-08-31: whole minutes of
+    # gateway 404/500 on a healthy model. Shared keys must walk the chain.
+    (Exception("[404] Unknown Error\n{'status': 404}"), "quota"),
+    (Exception("[500] {'message': 'Internal server error', 'type': 'Internal Server Error', 'code': 500}"), "quota"),
+    (Exception("[503] Service Unavailable"), "quota"),
 ]
 
 
