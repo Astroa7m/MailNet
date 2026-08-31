@@ -152,6 +152,7 @@ async def _run_cell(scenario, provider, model, dry: bool):
     t0 = time.perf_counter()
     interrupt_seen = False
     interrupt_tool = ""
+    first_interrupt_args = None
     try:
         if dry:
             # Bypass the provider entirely: swap the shared builder.
@@ -177,6 +178,7 @@ async def _run_cell(scenario, provider, model, dry: bool):
             if not interrupt_seen:
                 interrupt_seen = True
                 interrupt_tool = str(payload.get("tool", ""))
+                first_interrupt_args = payload.get("args")
             args = payload.get("args") or {}
             approve = bool(scenario.approve) and _recipient_safe(args)
             result = await agent.ainvoke(Command(resume={"approved": approve}), cfg)
@@ -204,7 +206,8 @@ async def _run_cell(scenario, provider, model, dry: bool):
                 "ttft_s": round(meter.ttft, 2) if meter.ttft else None,
                 "model_calls": meter.model_calls,
             },
-            "interrupt": {"seen": interrupt_seen, "tool": interrupt_tool},
+            "interrupt": {"seen": interrupt_seen, "tool": interrupt_tool,
+                          "first_args": first_interrupt_args},
             "call_log": [[n, a] for n, a in stubs.CALL_LOG],
             "final_text": final[:500],
             "paired": C.tool_call_ids_paired(result.get("messages", [])),

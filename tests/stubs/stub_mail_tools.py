@@ -143,11 +143,30 @@ async def download_attachment(msg_id: str, attachment_index: int = 0):
     })
 
 
-async def update_email_settings(new_partial_settings: dict):
+async def update_email_settings(
+    tone: Optional[str] = None,
+    language: Optional[str] = None,
+    writing_style: Optional[str] = None,
+    signature: Optional[str] = None,
+    preferred_greeting: Optional[str] = None,
+    sender_name: Optional[str] = None,
+    new_partial_settings: Optional[dict] = None,
+):
     """Updates the persisted email settings with partial overrides. Only
-    provided fields are overridden; all others are preserved."""
-    CALL_LOG.append(("update_email_settings", {"new_partial_settings": new_partial_settings}))
-    return _ok(dict(new_partial_settings), "Settings updated")
+    provided fields are overridden; all others are preserved.
+
+    Accepts both flat fields and a nested dict: the S07 sweep showed every
+    model calls with flat fields (tone="casual"), and the original
+    nested-only signature made the call fail validation, so all models
+    apologized instead of updating. The recorded shape is normalized."""
+    merged = dict(new_partial_settings or {})
+    for k, v in {"tone": tone, "language": language, "writing_style": writing_style,
+                 "signature": signature, "preferred_greeting": preferred_greeting,
+                 "sender_name": sender_name}.items():
+        if v is not None:
+            merged[k] = v
+    CALL_LOG.append(("update_email_settings", {"new_partial_settings": merged}))
+    return _ok(merged, "Settings updated")
 
 
 async def present_triage(items: list):
