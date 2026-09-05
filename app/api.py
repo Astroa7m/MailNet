@@ -36,7 +36,8 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
     build_agent, fetch_mcp_tools, get_or_create_user, db, mongo_client, content_to_text, SENSITIVE_TOOLS
-from provider_meta import list_chat_models, validate_key, ProviderError
+from provider_meta import (annotate_chat_models, list_chat_models,
+                           retired_nvidia_models, validate_key, ProviderError)
 from logging_config import get_logger
 
 log = get_logger("api")
@@ -85,6 +86,35 @@ async def _prewarm():
             log.info("semantic memory pre-warmed")
         except Exception as e:
             log.warning("memory pre-warm skipped: %r", e)
+        try:
+            # NVIDIA retires hosted models on a few days' notice and a retired
+            # one fails silently: chat walks the failover chain, memory just
+            # stops saving. One catalog call at startup names the dead model
+            # and the env var that repoints it without a rebuild. This is how
+            # the 2026-09-03 gpt-oss-120b retirement should have been caught.
+            nvidia_key = os.getenv("NVIDIA_API_KEY")
+            if nvidia_key:
+                from common import DEFAULT_CHAT_MODELS
+                from app.memory_store import MEM_EMBED_MODEL, MEM_EXTRACT_MODEL
+                pinned = {
+                    "NVIDIA_CHAT_MODEL": DEFAULT_CHAT_MODELS["nvidia"],
+                    "MEM_EXTRACT_MODEL": MEM_EXTRACT_MODEL,
+                    "MEM_EMBED_MODEL": MEM_EMBED_MODEL,
+                }
+                dead = await asyncio.to_thread(
+                    retired_nvidia_models, nvidia_key, list(pinned.values())
+                )
+                for env_var, model in pinned.items():
+                    if model in dead:
+                        log.error(
+                            "NVIDIA no longer serves %s: set %s to a live model "
+                            "(see /v1/models) and restart",
+                            model, env_var,
+                        )
+                if not dead:
+                    log.info("NVIDIA model pins verified against the live catalog")
+        except Exception as e:
+            log.warning("NVIDIA model check skipped: %r", e)
         try:
             from common import _checkpointer
             # A no-op list call forces the checkpointer to open its collection
@@ -1311,7 +1341,8 @@ async def provider_models(request: Request):
     if slot == "chat":
         try:
             models = await asyncio.to_thread(list_chat_models, provider, key)
-            return {"ok": True, "models": models}
+            models, meta = annotate_chat_models(provider, models)
+            return {"ok": True, "models": models, "model_meta": meta}
         except ProviderError as e:
             return {"ok": False, "reason": e.reason, "message": e.message}
         except Exception as e:

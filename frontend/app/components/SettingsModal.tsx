@@ -191,6 +191,10 @@ const TABS = [
 
 interface MemoryItem { id: string; memory: string; created_at?: string; }
 
+// Per-model hints from /provider-models: a measured speed tag and a one-line
+// note for the curated shortlist. Providers without a shortlist send {}.
+type ModelMeta = Record<string, { tag?: string; note?: string; popular?: boolean }>;
+
 interface ScheduledJob {
   job_id: string;
   to: string;
@@ -287,8 +291,11 @@ export default function SettingsModal({
   const [isAdmin, setIsAdmin] = useState(false);
   const [embedKeyInput, setEmbedKeyInput] = useState("");
   const [aiOriginal, setAiOriginal] = useState({ chatProvider: "nvidia", chatModel: "", embedProvider: "google" });
-  // Live model list + per-slot validation feedback.
+  // Live model list + per-slot validation feedback. modelMeta carries the
+  // curated shortlist and its measured speed tags, and is empty for providers
+  // that have no shortlist, which renders the plain flat list.
   const [chatModels, setChatModels] = useState<string[]>([]);
+  const [chatModelMeta, setChatModelMeta] = useState<ModelMeta>({});
   const [chatCheck, setChatCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [embedCheck, setEmbedCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [activeTab, setActiveTab] = useState("general");
@@ -342,6 +349,7 @@ export default function SettingsModal({
         setEmbedKeyInput("");
         setAiOriginal({ chatProvider: cp, chatModel: cm, embedProvider: ep });
         setChatModels([]);
+        setChatModelMeta({});
         setChatCheck({ loading: false, error: null });
         setEmbedCheck({ loading: false, error: null });
         // Preload the model list using the saved or shared key so the dropdown
@@ -368,6 +376,7 @@ export default function SettingsModal({
       if (d.ok) {
         const models: string[] = d.models || [];
         setChatModels(models);
+        setChatModelMeta(d.model_meta || {});
         setChatModel((cur) => {
           const wanted = preferModel || cur;
           return wanted && models.includes(wanted) ? wanted : models[0] || "";
@@ -375,10 +384,12 @@ export default function SettingsModal({
         setChatCheck({ loading: false, error: null });
       } else {
         setChatModels([]);
+        setChatModelMeta({});
         setChatCheck({ loading: false, error: d.message || "Couldn't verify this key." });
       }
     } catch {
       setChatModels([]);
+      setChatModelMeta({});
       setChatCheck({ loading: false, error: "Network error verifying the key." });
     }
   }
@@ -594,6 +605,11 @@ export default function SettingsModal({
 
   if (!open) return null;
 
+  // The shortlist keeps the order the backend sent (best default first); the
+  // rest of the provider's catalog follows underneath it.
+  const popularModels = chatModels.filter((m) => chatModelMeta[m]?.popular);
+  const otherModels = chatModels.filter((m) => !chatModelMeta[m]?.popular);
+
   return (
     <div
       ref={backdropRef}
@@ -673,7 +689,7 @@ export default function SettingsModal({
                         <select
                           className={selectClass}
                           value={chatProvider}
-                          onChange={(e) => { const v = e.target.value; setChatProvider(v); setChatModel(""); setChatModels([]); loadChatModels(v); }}
+                          onChange={(e) => { const v = e.target.value; setChatProvider(v); setChatModel(""); setChatModels([]); setChatModelMeta({}); loadChatModels(v); }}
                         >
                           <option value="nvidia">NVIDIA (NIM)</option>
                           <option value="groq">Groq</option>
@@ -712,11 +728,34 @@ export default function SettingsModal({
                       onChange={(e) => setChatModel(e.target.value)}
                       disabled={chatModels.length === 0}
                     >
-                      {chatModels.length === 0
-                        ? <option value="">{chatCheck.loading ? "Loading models…" : "Add or verify a key to load models"}</option>
-                        : chatModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                      {chatModels.length === 0 ? (
+                        <option value="">{chatCheck.loading ? "Loading models…" : "Add or verify a key to load models"}</option>
+                      ) : popularModels.length === 0 ? (
+                        chatModels.map((m) => <option key={m} value={m}>{m}</option>)
+                      ) : (
+                        <>
+                          <optgroup label="Recommended for MailNet">
+                            {popularModels.map((m) => (
+                              <option key={m} value={m}>{`${m}  (${chatModelMeta[m]?.tag || "unrated"})`}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label={`All ${otherModels.length} other models`}>
+                            {otherModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                          </optgroup>
+                        </>
+                      )}
                     </select>
                   </Field>
+                  {popularModels.length > 0 && (
+                    <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                      {chatModelMeta[chatModel]?.note ? `${chatModelMeta[chatModel].note} ` : ""}
+                      These are the models we test MailNet against; the rest of the provider's list sits below them, untested.
+                      Speed is the median of that test suite: <span className="font-medium">fast</span> is under 15s per request,{" "}
+                      <span className="font-medium">medium</span> 15 to 30s, <span className="font-medium">slow</span> longer. Bigger
+                      models are usually the more capable ones, so pick a fast one for quick back and forth and a slower one for
+                      tricky drafting.
+                    </p>
+                  )}
                   <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                     Pick a model that supports tool calling (e.g. GPT, Claude, Gemini, Llama 3.3, gpt-oss). Some models like Gemma can't reliably use tools, so actions and memory may not work.
                   </p>

@@ -37,6 +37,54 @@ def _is_chat_model(model_id: str) -> bool:
     return not any(h in m for h in _NON_CHAT_HINTS)
 
 
+# Curated shortlist surfaced above the full list in the model dropdown, most
+# recommendable first. NVIDIA hosts ~70 chat models and most are specialists
+# (code, medical, translation, safety, OCR) that cannot drive a mail agent, so
+# a flat alphabetical list buries the handful worth picking.
+#
+# Speed tags are measured, not guessed: the median MailNet task in the eval
+# suite (tests/evals, run 20260905-120805, 12 scenarios each). Buckets are fast
+# (under 15s), medium (15 to 30s), slow (over 30s). Membership is earned in the
+# same run: of 13 NVIDIA models probed, the rest either could not return a tool
+# call, timed out past 75 seconds, or answered "Not found for account" despite
+# being listed, so they stay out of the shortlist but remain in the full list.
+#
+# Entries are filtered against the live /v1/models response before reaching the
+# UI, so a retired model drops off on its own, which matters because NVIDIA
+# retires hosted models on a few days' notice (six went "[410] Gone" during
+# this project, including a previous default).
+NVIDIA_POPULAR = (
+    ("nvidia/nemotron-3-super-120b-a12b", "fast",
+     "Default. Best scores in our evals, and the quickest."),
+    ("nvidia/nemotron-3.5-lightning-30b-a3b", "medium",
+     "Scores like the default, a few seconds behind it."),
+    ("openai/gpt-oss-20b", "medium",
+     "Fine for everyday asks, weaker on multi-step ones."),
+    ("nvidia/nemotron-3-ultra-550b-a55b", "slow",
+     "The largest model here, and the most rate-limited."),
+)
+
+_POPULAR = {"nvidia": NVIDIA_POPULAR}
+
+
+def annotate_chat_models(provider: str, models: list) -> tuple:
+    """Return (ordered_models, meta) for a provider's model list.
+
+    Curated models keep their table order and come first; everything else
+    follows in the provider's own order. meta maps model id to
+    {"tag", "note", "popular"} and is empty for providers without a table,
+    which leaves their dropdown exactly as it was.
+    """
+    table = _POPULAR.get(provider)
+    if not table:
+        return models, {}
+    available = set(models)
+    picked = [row for row in table if row[0] in available]
+    meta = {mid: {"tag": tag, "note": note, "popular": True} for mid, tag, note in picked}
+    rest = [m for m in models if m not in meta]
+    return [row[0] for row in picked] + rest, meta
+
+
 class ProviderError(Exception):
     """A provider call failed. reason is one of: auth, quota, error."""
 
@@ -108,6 +156,19 @@ def _nvidia_models(api_key: str) -> list:
     like Groq and Ollama Cloud; the existing UI hint already tells users to
     pick a tool-capable model."""
     return [m for m in _bearer_models(NVIDIA_MODELS_URL, api_key) if _is_chat_model(m)]
+
+
+def retired_nvidia_models(api_key: str, wanted: list) -> list:
+    """Return the names in wanted that NVIDIA's live catalog no longer serves.
+
+    A retirement fails quietly in production: chat walks the failover chain and
+    memory just stops saving, so the app looks healthy while NVIDIA is doing
+    nothing. Called once at startup to turn that into a log line that names the
+    dead model. Raises ProviderError if the catalog itself cannot be read,
+    which the caller treats as "unknown", never as "retired".
+    """
+    live = set(_bearer_models(NVIDIA_MODELS_URL, api_key))
+    return [m for m in wanted if m not in live]
 
 
 def list_chat_models(provider: str, api_key: str) -> list:

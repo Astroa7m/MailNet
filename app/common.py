@@ -293,8 +293,8 @@ SYSTEM_PROMPT = Template(
     - Writing style: $writing_style
     - Sender name: $sender_name
     - Organization: $organization_name
-    - Greeting: $preferred_greeting
-    - Signature: $signature (enabled: $include_signature)
+    - Greeting: $preferred_greeting - open the email body with it
+    - Signature: $signature (enabled: $include_signature) - when enabled, end the email body with it. It is a template: replace {{sender_name}} and {{organization_name}} with the values above, and drop a placeholder's line entirely when its value is empty.
     - Character limit: $character_limit characters
     - Auto-adjust tone: $auto_adjust_tone
 
