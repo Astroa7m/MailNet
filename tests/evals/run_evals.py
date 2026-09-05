@@ -24,6 +24,7 @@ scenarios.SAFE_RECIPIENTS. Everything else is declined and recorded.
 """
 import argparse
 import asyncio
+import functools
 import json
 import os
 import sys
@@ -76,29 +77,49 @@ class Meter(AsyncCallbackHandler):
             self.ttft = time.perf_counter() - self.t_start
 
 
+# build_agent looks the user up and the tools it defines itself (settings,
+# scheduling) refuse to act without an owner, so the eval user needs an
+# ObjectId-shaped id. find_one still returns nothing, so DEFAULT_PREFERENCES
+# stays in force.
+EVAL_USER_ID = "6500000000000000000000aa"
+
+
 class _FakeColl:
+    """Reads find nothing; writes are recorded so checks can assert on them."""
+
+    def __init__(self, writes: list):
+        self._writes = writes
+
     def find_one(self, *a, **k): return None
-    def update_one(self, *a, **k): return None
     def insert_one(self, *a, **k): return None
     def delete_many(self, *a, **k): return None
 
+    def update_one(self, _filter, update=None, *a, **k):
+        self._writes.append(dict((update or {}).get("$set") or {}))
+        return None
+
 
 class _FakeDB:
-    def __getitem__(self, name): return _FakeColl()
+    def __init__(self, writes: list):
+        self._writes = writes
+
+    def __getitem__(self, name): return _FakeColl(self._writes)
 
 
-def _patch_offline(candidate_provider: str, candidate_model: str, prefs_override, scheduler_calls: list):
+def _patch_offline(candidate_provider: str, candidate_model: str, prefs_override,
+                   scheduler_calls: list, db_writes: list):
     """Point app.common at fakes and the candidate model. Returns undo()."""
     saved = {
         "db": common.db,
         "ckpt": common._checkpointer_inst,
         "sched_once": common.schedule_send_email,
         "sched_cron": common.schedule_recurring_email,
+        "triage": common.present_triage,
         "prefs": common.DEFAULT_PREFERENCES,
         "model": dict(common.DEFAULT_CHAT_MODELS),
         "chain_env": os.environ.get("SHARED_CHAT_CHAIN"),
     }
-    common.db = _FakeDB()
+    common.db = _FakeDB(db_writes)
     common._checkpointer_inst = InMemorySaver()
 
     def _sched_recorder(**kwargs):
@@ -107,10 +128,27 @@ def _patch_offline(candidate_provider: str, candidate_model: str, prefs_override
 
     common.schedule_send_email = _sched_recorder
     common.schedule_recurring_email = _sched_recorder
+
+    # present_triage is the app's own tool (in production the card is a frontend
+    # action, never an MCP tool), so it is recorded here rather than stubbed,
+    # and still runs its real category normalization. functools.wraps keeps the
+    # docstring and signature, which ARE the tool description the model reads.
+    @functools.wraps(saved["triage"])
+    def _triage_recorder(items):
+        recorded = [i if isinstance(i, dict) else i.model_dump() for i in (items or [])]
+        stubs.CALL_LOG.append(("present_triage", {"items": recorded}))
+        return saved["triage"](items)
+
+    common.present_triage = _triage_recorder
+
+    merged = dict(common.DEFAULT_PREFERENCES)
+    # The eval user has no smart-features key and no reachable Redis, so the
+    # memory tools would hit the real mem0 stack. Recall is exercised through
+    # recalled_context instead, which is exactly what /agent injects.
+    merged["memory_enabled"] = False
     if prefs_override:
-        merged = dict(common.DEFAULT_PREFERENCES)
         merged.update(prefs_override)
-        common.DEFAULT_PREFERENCES = merged
+    common.DEFAULT_PREFERENCES = merged
     common.DEFAULT_CHAT_MODELS[candidate_provider] = candidate_model
     os.environ["SHARED_CHAT_CHAIN"] = candidate_provider
 
@@ -119,6 +157,7 @@ def _patch_offline(candidate_provider: str, candidate_model: str, prefs_override
         common._checkpointer_inst = saved["ckpt"]
         common.schedule_send_email = saved["sched_once"]
         common.schedule_recurring_email = saved["sched_cron"]
+        common.present_triage = saved["triage"]
         common.DEFAULT_PREFERENCES = saved["prefs"]
         common.DEFAULT_CHAT_MODELS.clear()
         common.DEFAULT_CHAT_MODELS.update(saved["model"])
@@ -147,7 +186,8 @@ async def _run_cell(scenario, provider, model, dry: bool):
     """Execute one scenario against one model. Returns the ledger record body."""
     stubs.reset_log()
     scheduler_calls: list = []
-    undo = _patch_offline(provider, model, scenario.prefs_override, scheduler_calls)
+    db_writes: list = []
+    undo = _patch_offline(provider, model, scenario.prefs_override, scheduler_calls, db_writes)
     meter = Meter()
     t0 = time.perf_counter()
     interrupt_seen = False
@@ -162,10 +202,10 @@ async def _run_cell(scenario, provider, model, dry: bool):
             azure_token=None,
             google_token={"token": "stub", "refresh_token": "stub"},
             user_tz="UTC",
-            user_id=None,
+            user_id=EVAL_USER_ID,
             disconnected=None,
             recalled_context=scenario.recalled_context,
-            prefetched_mcp_tools=list(stubs.STUB_TOOLS),
+            prefetched_mcp_tools=stubs.mcp_tool_set(),
         )
         cfg = {"configurable": {"thread_id": f"eval-{provider}-{scenario.id}"},
                "callbacks": [meter]}
@@ -196,6 +236,7 @@ async def _run_cell(scenario, provider, model, dry: bool):
         result["_interrupt_seen"] = interrupt_seen
         result["_interrupt_tool"] = interrupt_tool
         result["_scheduler_calls"] = scheduler_calls
+        result["_db_writes"] = db_writes
         checks = scenario.check(result, list(stubs.CALL_LOG), texts)
         status = "pass" if all(checks.values()) else "fail"
         return {

@@ -141,9 +141,13 @@ def _s06_check(result, log, texts):
 
 
 def _s07_check(result, log, texts):
-    updates = C.calls_of(log, "update_email_settings")
+    # The settings tool is the app's own (common.py), not an MCP tool, so the
+    # evidence is the preferences write it makes, recorded by the harness fake
+    # db as {"preferences.tone": "casual"}.
+    updates = [w for w in (result.get("_db_writes") or [])
+               if any(k.startswith("preferences.") for k in w)]
     tone_casual = any(
-        str((u.get("new_partial_settings") or {}).get("tone", "")).lower() == "casual"
+        set(u) == {"preferences.tone"} and str(u["preferences.tone"]).lower() == "casual"
         for u in updates
     )
     return {

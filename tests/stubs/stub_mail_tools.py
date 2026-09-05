@@ -176,10 +176,26 @@ async def present_triage(items: list):
     return _ok({"presented": len(items)}, "Triage rendered")
 
 
-# Handed to build_agent(prefetched_mcp_tools=STUB_TOOLS). build_agent coerces
-# plain async functions through its own coerce_tool path.
 STUB_TOOLS = [
     read_emails, search_emails, send_email, draft_email, send_draft,
     reply_to_email, delete_email, archive_email, toggle_label,
     download_attachment, update_email_settings, present_triage,
 ]
+
+# Names build_agent defines itself, which must NOT also arrive as MCP tools.
+# Production strips update_email_settings from the MCP list (common.py
+# fetch_mcp_tools) because the app owns the validated version, and
+# present_triage is a frontend action that never comes from MCP at all.
+# Passing the stubs unfiltered put two tools of each name in the pool: the
+# model called the app's settings tool, which refused for lack of a user
+# context, and S07 failed for every model no matter how well it behaved.
+_APP_OWNED = {"update_email_settings", "present_triage"}
+
+
+def mcp_tool_set() -> list:
+    """The stubs as build_agent(prefetched_mcp_tools=...) should receive them.
+
+    build_agent coerces plain async functions through its own coerce_tool path,
+    so no wrapping is needed here.
+    """
+    return [t for t in STUB_TOOLS if t.__name__ not in _APP_OWNED]
