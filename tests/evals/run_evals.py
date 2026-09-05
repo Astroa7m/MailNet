@@ -14,7 +14,7 @@ the cell quota_blocked instead of fail; --resume RUN_ID skips cells that
 already concluded, so a run can be finished across days.
 
 Usage:
-  python -m tests.evals.run_evals --models nvidia:openai/gpt-oss-120b,groq:openai/gpt-oss-120b
+  python -m tests.evals.run_evals --models nvidia:nvidia/nemotron-3-super-120b-a12b,groq:openai/gpt-oss-120b
   python -m tests.evals.run_evals --resume 20260827-1 --models ...
   python -m tests.evals.run_evals --dry          (offline machinery self-test)
 
@@ -237,7 +237,7 @@ def _load_done(ledger: Path) -> set:
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", default="nvidia:openai/gpt-oss-120b",
+    ap.add_argument("--models", default="nvidia:nvidia/nemotron-3-super-120b-a12b",
                     help="comma list of provider:model, e.g. nvidia:meta/llama-3.3-70b-instruct,groq:openai/gpt-oss-120b")
     ap.add_argument("--scenarios", default="", help="comma list of scenario ids to run (default: all)")
     ap.add_argument("--repeats", type=int, default=1)

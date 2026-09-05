@@ -88,7 +88,13 @@ DEFAULT_PREFERENCES = {
 # Chat providers the user can pick in Settings → AI Models. Default model per
 # provider is used when the user does not supply a model override.
 DEFAULT_CHAT_MODELS = {
-    "nvidia": "openai/gpt-oss-120b",
+    # NVIDIA retires hosted models on a few days' notice: six candidates went
+    # "[410] Gone" during this project, including the previous default
+    # (openai/gpt-oss-120b, EOL 2026-09-03). So the NVIDIA entry is
+    # env-overridable, which makes the next retirement a restart instead of a
+    # rebuild. The default is the eval sweep winner (tests/evals): best
+    # scenario pass rate and latency of the tool-capable candidates, no hangs.
+    "nvidia": os.getenv("NVIDIA_CHAT_MODEL", "nvidia/nemotron-3-super-120b-a12b"),
     "groq": "openai/gpt-oss-120b",
     "google_genai": "gemini-2.5-flash",
     "openai": "gpt-4o-mini",

@@ -38,14 +38,18 @@ load_dotenv()
 EMBEDDING_DIMS = 2048
 
 # NVIDIA NIM speaks the OpenAI wire format, so the shared build drives it
-# through mem0's openai provider with a custom base URL. Model choices come
-# from the 2026-08-29 spike: nemotron-3-embed-1b is the only hosted embedding
-# model that works through the plain OpenAI shape (the QA embedders demand an
-# input_type param mem0 cannot send), and gpt-oss-120b accepts the
-# response_format=json_object that mem0's extraction step always sends.
+# through mem0's openai provider with a custom base URL. nemotron-3-embed-1b is
+# the only hosted embedding model that works through the plain OpenAI shape
+# (the QA embedders demand an input_type param mem0 cannot send). The
+# extraction model must accept response_format=json_object, which mem0's add()
+# step always sends; the first pick (openai/gpt-oss-120b) reached end of life
+# on 2026-09-03, which silently broke every shared save, so both names are
+# env-overridable now: the next retirement is a restart, not a rebuild.
+# Changing the EMBED model still means dropping and recreating the index,
+# because vectors from two models cannot share one.
 _NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-MEM_EXTRACT_MODEL = "openai/gpt-oss-120b"
-MEM_EMBED_MODEL = "nvidia/nemotron-3-embed-1b"
+MEM_EXTRACT_MODEL = os.getenv("MEM_EXTRACT_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+MEM_EMBED_MODEL = os.getenv("MEM_EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 
 # Free-tier cap on memory SAVES per user per day (extraction is the expensive
 # call). Recall is uncapped. BYOK and admin are exempt.

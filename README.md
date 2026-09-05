@@ -219,6 +219,12 @@ GROQ_API_KEY=...            # chat failover (and the default if NVIDIA_API_KEY i
 GOOGLE_API_KEY=...          # second chat failover; also semantic memory (embeddings + extraction)
 # SHARED_CHAT_CHAIN=nvidia,groq,google_genai   # optional: reorder or drop shared chat providers without a rebuild
 # MEMORY_SAVES_PER_DAY=20    # optional: free-tier daily cap on memory saves (BYOK and admin exempt)
+# NVIDIA retires hosted models on days of notice, so the three model names it
+# serves are overridable without a rebuild. Check a name is still live with:
+#   curl -s https://integrate.api.nvidia.com/v1/models -H "Authorization: Bearer $NVIDIA_API_KEY" | grep <name>
+# NVIDIA_CHAT_MODEL=nvidia/nemotron-3-super-120b-a12b   # shared chat default
+# MEM_EXTRACT_MODEL=nvidia/nemotron-3-super-120b-a12b   # memory fact extraction (needs JSON mode)
+# MEM_EMBED_MODEL=nvidia/nemotron-3-embed-1b            # memory embeddings (changing it means reindexing)
 
 # Google OAuth (Gmail)
 GOOGLE_CLIENT_ID=...
