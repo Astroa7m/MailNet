@@ -128,30 +128,6 @@ function KeyBadge({ state }: { state: "yours" | "shared" | "needed" }) {
   );
 }
 
-// The two-way choice under a hosted provider: run on MailNet's key or on one
-// of your own.
-function KeySourceSwitch({
-  mode,
-  onChange,
-}: {
-  mode: "shared" | "own";
-  onChange: (m: "shared" | "own") => void;
-}) {
-  const base = "px-2.5 py-1 rounded-md transition-colors";
-  const on = "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm font-medium";
-  const off = "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200";
-  return (
-    <div className="inline-flex gap-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 text-xs">
-      <button type="button" onClick={() => onChange("shared")} className={`${base} ${mode === "shared" ? on : off}`}>
-        MailNet&apos;s key
-      </button>
-      <button type="button" onClick={() => onChange("own")} className={`${base} ${mode === "own" ? on : off}`}>
-        My own key
-      </button>
-    </div>
-  );
-}
-
 function CheckLine({ state, okText }: { state: { loading: boolean; error: string | null }; okText?: string }) {
   if (state.loading) return <p className="text-xs text-gray-400 dark:text-gray-500">Verifying…</p>;
   if (state.error) return <p className="text-xs text-red-500 leading-relaxed">{state.error}</p>;
@@ -334,9 +310,6 @@ export default function SettingsModal({
   // user's, which decides whether their own key reads as optional or required.
   const [chatUsingShared, setChatUsingShared] = useState(false);
   const [embedUsingShared, setEmbedUsingShared] = useState(false);
-  // Which key the user has chosen to run on, for providers where both exist.
-  const [chatKeyMode, setChatKeyMode] = useState<"shared" | "own">("shared");
-  const [embedKeyMode, setEmbedKeyMode] = useState<"shared" | "own">("shared");
   const [chatCheck, setChatCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [embedCheck, setEmbedCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [activeTab, setActiveTab] = useState("general");
@@ -390,11 +363,9 @@ export default function SettingsModal({
         setChatModel(cm);
         setChatHasKey(chatKey);
         setChatKeyInput("");
-        setChatKeyMode(chatKey || !HOSTED_CHAT_PROVIDERS.includes(cp) ? "own" : "shared");
         setEmbedProvider(ep);
         setEmbedHasKey(embedKey);
         setEmbedKeyInput("");
-        setEmbedKeyMode(embedKey || !HOSTED_EMBED_PROVIDERS.includes(ep) ? "own" : "shared");
         setAiOriginal({ chatProvider: cp, chatModel: cm, embedProvider: ep });
         setChatModels([]);
         setChatModelMeta({});
@@ -561,7 +532,6 @@ export default function SettingsModal({
       setChatProvider(next);
       setChatModel("");
       setChatKeyInput("");
-      setChatKeyMode("shared");
       setChatCheck({ loading: false, error: null });
       setAiOriginal((a) => ({ ...a, chatProvider: next, chatModel: "" }));
       loadChatModels(next);
@@ -570,7 +540,6 @@ export default function SettingsModal({
       setEmbedHasKey(false);
       setEmbedProvider(next);
       setEmbedKeyInput("");
-      setEmbedKeyMode("shared");
       setEmbedCheck({ loading: false, error: null });
       setAiOriginal((a) => ({ ...a, embedProvider: next }));
     }
@@ -587,28 +556,8 @@ export default function SettingsModal({
     setChatModelMeta({});
     setChatUsingShared(false);
     setChatCheck({ loading: false, error: null });
-    setChatKeyMode(savedHere || !hosted ? "own" : "shared");
     // Only ask the server for models when a key it can use actually exists.
     if (hosted || savedHere) loadChatModels(v);
-  }
-
-  async function switchChatKeyMode(mode: "shared" | "own") {
-    if (mode === chatKeyMode) return;
-    if (mode === "shared" && chatHasKey && chatProvider === aiOriginal.chatProvider) {
-      if (!window.confirm("Switch to MailNet's shared key? Your saved key for this provider will be deleted.")) return;
-      await removeKey("chat", { keepProvider: true });
-      return;
-    }
-    setChatKeyMode(mode);
-    setChatKeyInput("");
-    setChatCheck({ loading: false, error: null });
-    if (mode === "shared") {
-      loadChatModels(chatProvider);
-    } else {
-      setChatModels([]);
-      setChatModelMeta({});
-      setChatUsingShared(false);
-    }
   }
 
   function switchEmbedProvider(v: string) {
@@ -617,22 +566,7 @@ export default function SettingsModal({
     setEmbedProvider(v);
     setEmbedUsingShared(false);
     setEmbedCheck({ loading: false, error: null });
-    setEmbedKeyMode(savedHere || !hosted ? "own" : "shared");
     if (hosted || savedHere) verifyEmbedKey(v);
-  }
-
-  async function switchEmbedKeyMode(mode: "shared" | "own") {
-    if (mode === embedKeyMode) return;
-    if (mode === "shared" && embedHasKey && embedProvider === aiOriginal.embedProvider) {
-      if (!window.confirm("Switch to MailNet's shared key? Your saved key for this provider will be deleted.")) return;
-      await removeKey("embeddings", { keepProvider: true });
-      return;
-    }
-    setEmbedKeyMode(mode);
-    setEmbedKeyInput("");
-    setEmbedCheck({ loading: false, error: null });
-    setEmbedUsingShared(false);
-    if (mode === "shared") verifyEmbedKey(embedProvider);
   }
 
   function set<K extends keyof Preferences>(key: K, value: Preferences[K]) {
@@ -742,17 +676,9 @@ export default function SettingsModal({
   const chatSavedKeyHere = chatHasKey && chatProvider === aiOriginal.chatProvider;
   const embedSavedKeyHere = embedHasKey && embedProvider === aiOriginal.embedProvider;
   const chatKeyState: "yours" | "shared" | "needed" =
-    chatSavedKeyHere || (chatKeyMode === "own" && !!chatKeyInput.trim())
-      ? "yours"
-      : chatIsHosted && chatKeyMode === "shared"
-        ? "shared"
-        : "needed";
+    chatSavedKeyHere || chatKeyInput.trim() ? "yours" : chatIsHosted ? "shared" : "needed";
   const embedKeyState: "yours" | "shared" | "needed" =
-    embedSavedKeyHere || (embedKeyMode === "own" && !!embedKeyInput.trim())
-      ? "yours"
-      : embedIsHosted && embedKeyMode === "shared"
-        ? "shared"
-        : "needed";
+    embedSavedKeyHere || embedKeyInput.trim() ? "yours" : embedIsHosted ? "shared" : "needed";
 
   return (
     <div
@@ -848,25 +774,21 @@ export default function SettingsModal({
                   </Field>
                   <Field label="Chat API Key" fieldKey="chat_key">
                     <div className="space-y-1.5">
-                      {chatIsHosted && (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <KeySourceSwitch mode={chatKeyMode} onChange={switchChatKeyMode} />
-                          <span className="text-xs text-gray-400 dark:text-gray-500">
-                            {chatKeyMode === "shared" ? "Free, rate-limited" : "Your own limits and billing"}
-                          </span>
-                        </div>
-                      )}
-                      {(!chatIsHosted || chatKeyMode === "own") && (
-                        <input
-                          type="password"
-                          autoComplete="off"
-                          className={inputClass}
-                          placeholder={chatSavedKeyHere ? "•••••••• saved, type to replace" : "Paste your API key for this provider"}
-                          value={chatKeyInput}
-                          onChange={(e) => setChatKeyInput(e.target.value)}
-                          onBlur={(e) => { const k = e.target.value.trim(); if (k) loadChatModels(chatProvider, k); }}
-                        />
-                      )}
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        className={inputClass}
+                        placeholder={
+                          chatSavedKeyHere
+                            ? "•••••••• saved, type to replace"
+                            : chatIsHosted
+                              ? "Optional: paste your own key to lift the shared limits"
+                              : "Paste your API key for this provider"
+                        }
+                        value={chatKeyInput}
+                        onChange={(e) => setChatKeyInput(e.target.value)}
+                        onBlur={(e) => { const k = e.target.value.trim(); if (k) loadChatModels(chatProvider, k); }}
+                      />
                       <CheckLine
                         state={chatCheck}
                         okText={
@@ -877,9 +799,13 @@ export default function SettingsModal({
                               : `${chatModels.length} models available on your key`
                         }
                       />
-                      {chatSavedKeyHere && !chatIsHosted && (
-                        <button type="button" onClick={() => removeKey("chat")} className="text-xs text-red-500 hover:underline">
-                          Remove saved key
+                      {chatSavedKeyHere && (
+                        <button
+                          type="button"
+                          onClick={() => removeKey("chat", { keepProvider: true })}
+                          className="text-xs text-red-500 hover:underline"
+                        >
+                          Remove saved key{chatIsHosted ? " and go back to MailNet's" : ""}
                         </button>
                       )}
                     </div>
@@ -895,7 +821,7 @@ export default function SettingsModal({
                         <option value="">
                           {chatCheck.loading
                             ? "Loading models…"
-                            : chatIsHosted && chatKeyMode === "shared"
+                            : chatIsHosted
                               ? "Couldn't load models right now"
                               : "Add your API key above to load models"}
                         </option>
@@ -952,38 +878,38 @@ export default function SettingsModal({
                   </Field>
                   <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                     Powers personalization by remembering your preferences and recurring contacts to tailor replies.
-                    {embedIsHosted && embedKeyMode === "shared"
+                    {embedIsHosted && !embedSavedKeyHere
                       ? " Runs on MailNet's key, with a daily limit on new memories."
                       : ""}
                   </p>
                   <Field label="Smart Features Key" fieldKey="embed_key">
                     <div className="space-y-1.5">
-                      {embedIsHosted && (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <KeySourceSwitch mode={embedKeyMode} onChange={switchEmbedKeyMode} />
-                          <span className="text-xs text-gray-400 dark:text-gray-500">
-                            {embedKeyMode === "shared" ? "Free, capped saves per day" : "No cap, billed to you"}
-                          </span>
-                        </div>
-                      )}
-                      {(!embedIsHosted || embedKeyMode === "own") && (
                       <input
                         type="password"
                         autoComplete="off"
                         className={inputClass}
-                        placeholder={embedSavedKeyHere ? "•••••••• saved, type to replace" : "Paste your API key for this provider"}
+                        placeholder={
+                          embedSavedKeyHere
+                            ? "•••••••• saved, type to replace"
+                            : embedIsHosted
+                              ? "Optional: paste your own key to lift the daily cap"
+                              : "Paste your API key for this provider"
+                        }
                         value={embedKeyInput}
                         onChange={(e) => setEmbedKeyInput(e.target.value)}
                         onBlur={(e) => { const k = e.target.value.trim(); if (k) verifyEmbedKey(embedProvider, k); }}
                       />
-                      )}
                       <CheckLine
                         state={embedCheck}
                         okText={embedUsingShared ? "Running on MailNet's key" : embedSavedKeyHere ? "Key verified" : ""}
                       />
-                      {embedSavedKeyHere && !embedIsHosted && (
-                        <button type="button" onClick={() => removeKey("embeddings")} className="text-xs text-red-500 hover:underline">
-                          Remove saved key
+                      {embedSavedKeyHere && (
+                        <button
+                          type="button"
+                          onClick={() => removeKey("embeddings", { keepProvider: true })}
+                          className="text-xs text-red-500 hover:underline"
+                        >
+                          Remove saved key{embedIsHosted ? " and go back to MailNet's" : ""}
                         </button>
                       )}
                     </div>
