@@ -111,17 +111,44 @@ function SectionHeader({ title }: { title: string }) {
   );
 }
 
-function KeyBadge({ yours }: { yours: boolean }) {
+// Three states, because "not your key" is not the same as "ours". Saying
+// "Shared key" on OpenAI or Anthropic claimed a key MailNet does not have, so
+// a provider nobody could use looked ready to go.
+function KeyBadge({ state }: { state: "yours" | "shared" | "needed" }) {
+  const styles = {
+    yours: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400",
+    shared: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400",
+    needed: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
+  };
+  const labels = { yours: "Your key", shared: "MailNet's key", needed: "Key required" };
   return (
-    <span
-      className={`shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap ${
-        yours
-          ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400"
-          : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
-      }`}
-    >
-      {yours ? "Using your key" : "Shared key"}
+    <span className={`shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap ${styles[state]}`}>
+      {labels[state]}
     </span>
+  );
+}
+
+// The two-way choice under a hosted provider: run on MailNet's key or on one
+// of your own.
+function KeySourceSwitch({
+  mode,
+  onChange,
+}: {
+  mode: "shared" | "own";
+  onChange: (m: "shared" | "own") => void;
+}) {
+  const base = "px-2.5 py-1 rounded-md transition-colors";
+  const on = "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm font-medium";
+  const off = "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200";
+  return (
+    <div className="inline-flex gap-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 text-xs">
+      <button type="button" onClick={() => onChange("shared")} className={`${base} ${mode === "shared" ? on : off}`}>
+        MailNet&apos;s key
+      </button>
+      <button type="button" onClick={() => onChange("own")} className={`${base} ${mode === "own" ? on : off}`}>
+        My own key
+      </button>
+    </div>
   );
 }
 
@@ -194,6 +221,13 @@ interface MemoryItem { id: string; memory: string; created_at?: string; }
 // Per-model hints from /provider-models: a measured speed tag and a one-line
 // note for the curated shortlist. Providers without a shortlist send {}.
 type ModelMeta = Record<string, { tag?: string; note?: string; popular?: boolean }>;
+
+// Providers MailNet ships a shared key for, mirroring _shared_key_for in
+// api.py. On these the model list loads without the user pasting anything and
+// their own key is an upgrade; everywhere else a key is required. Smart
+// features are NVIDIA-only because shared memory never spends Groq or Gemini.
+const HOSTED_CHAT_PROVIDERS = ["nvidia", "groq", "google_genai"];
+const HOSTED_EMBED_PROVIDERS = ["nvidia"];
 
 interface ScheduledJob {
   job_id: string;
@@ -296,6 +330,13 @@ export default function SettingsModal({
   // that have no shortlist, which renders the plain flat list.
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatModelMeta, setChatModelMeta] = useState<ModelMeta>({});
+  // Whether the list/check just came back on MailNet's key rather than the
+  // user's, which decides whether their own key reads as optional or required.
+  const [chatUsingShared, setChatUsingShared] = useState(false);
+  const [embedUsingShared, setEmbedUsingShared] = useState(false);
+  // Which key the user has chosen to run on, for providers where both exist.
+  const [chatKeyMode, setChatKeyMode] = useState<"shared" | "own">("shared");
+  const [embedKeyMode, setEmbedKeyMode] = useState<"shared" | "own">("shared");
   const [chatCheck, setChatCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [embedCheck, setEmbedCheck] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [activeTab, setActiveTab] = useState("general");
@@ -339,14 +380,21 @@ export default function SettingsModal({
 
         const cp = keysData?.chat?.provider || "nvidia";
         const cm = keysData?.chat?.model || "";
-        const ep = keysData?.embeddings?.provider || "google";
+        // Default to the provider memory actually runs on for a keyless user.
+        // It used to default to Google, so Settings showed a provider the app
+        // was not using and could not use without a key.
+        const ep = keysData?.embeddings?.provider || "nvidia";
+        const chatKey = !!keysData?.chat?.has_key;
+        const embedKey = !!keysData?.embeddings?.has_key;
         setChatProvider(cp);
         setChatModel(cm);
-        setChatHasKey(!!keysData?.chat?.has_key);
+        setChatHasKey(chatKey);
         setChatKeyInput("");
+        setChatKeyMode(chatKey || !HOSTED_CHAT_PROVIDERS.includes(cp) ? "own" : "shared");
         setEmbedProvider(ep);
-        setEmbedHasKey(!!keysData?.embeddings?.has_key);
+        setEmbedHasKey(embedKey);
         setEmbedKeyInput("");
+        setEmbedKeyMode(embedKey || !HOSTED_EMBED_PROVIDERS.includes(ep) ? "own" : "shared");
         setAiOriginal({ chatProvider: cp, chatModel: cm, embedProvider: ep });
         setChatModels([]);
         setChatModelMeta({});
@@ -377,6 +425,7 @@ export default function SettingsModal({
         const models: string[] = d.models || [];
         setChatModels(models);
         setChatModelMeta(d.model_meta || {});
+        setChatUsingShared(!!d.using_shared);
         setChatModel((cur) => {
           const wanted = preferModel || cur;
           return wanted && models.includes(wanted) ? wanted : models[0] || "";
@@ -385,7 +434,13 @@ export default function SettingsModal({
       } else {
         setChatModels([]);
         setChatModelMeta({});
-        setChatCheck({ loading: false, error: d.message || "Couldn't verify this key." });
+        setChatUsingShared(false);
+        // "no_key" is the expected state for a provider we host no key for,
+        // not a failure: the key field says what to do, so no red error here.
+        setChatCheck({
+          loading: false,
+          error: d.reason === "no_key" ? null : d.message || "Couldn't verify this key.",
+        });
       }
     } catch {
       setChatModels([]);
@@ -404,7 +459,11 @@ export default function SettingsModal({
         body: JSON.stringify({ slot: "embeddings", provider, ...(key ? { key } : {}) }),
       });
       const d = await r.json();
-      setEmbedCheck({ loading: false, error: d.ok ? null : d.message || "Couldn't verify this key." });
+      setEmbedUsingShared(!!d.using_shared);
+      setEmbedCheck({
+        loading: false,
+        error: d.ok || d.reason === "no_key" ? null : d.message || "Couldn't verify this key.",
+      });
     } catch {
       setEmbedCheck({ loading: false, error: "Network error verifying the key." });
     }
@@ -488,25 +547,92 @@ export default function SettingsModal({
     }
   }
 
-  async function removeKey(slot: "chat" | "embeddings") {
+  // keepProvider is for the "use MailNet's key instead" switch: dropping a
+  // Groq key means running Groq on the shared key, not being moved to NVIDIA.
+  // Without a key a provider we host none for is unusable, so that case still
+  // falls back to the shared default.
+  async function removeKey(slot: "chat" | "embeddings", opts?: { keepProvider?: boolean }) {
     try {
       await fetch(`${API}/api-keys/${slot}`, { method: "DELETE", credentials: "include" });
     } catch { /* best effort */ }
     if (slot === "chat") {
+      const next = opts?.keepProvider && HOSTED_CHAT_PROVIDERS.includes(chatProvider) ? chatProvider : "nvidia";
       setChatHasKey(false);
-      setChatProvider("nvidia");
+      setChatProvider(next);
       setChatModel("");
       setChatKeyInput("");
+      setChatKeyMode("shared");
       setChatCheck({ loading: false, error: null });
-      setAiOriginal((a) => ({ ...a, chatProvider: "nvidia", chatModel: "" }));
-      loadChatModels("nvidia");
+      setAiOriginal((a) => ({ ...a, chatProvider: next, chatModel: "" }));
+      loadChatModels(next);
     } else {
+      const next = opts?.keepProvider && HOSTED_EMBED_PROVIDERS.includes(embedProvider) ? embedProvider : "nvidia";
       setEmbedHasKey(false);
-      setEmbedProvider("google");
+      setEmbedProvider(next);
       setEmbedKeyInput("");
+      setEmbedKeyMode("shared");
       setEmbedCheck({ loading: false, error: null });
-      setAiOriginal((a) => ({ ...a, embedProvider: "google" }));
+      setAiOriginal((a) => ({ ...a, embedProvider: next }));
     }
+  }
+
+  // Switching provider re-decides which key applies: a saved key belongs to
+  // the provider it was saved for, not to whatever is selected now.
+  function switchChatProvider(v: string) {
+    const savedHere = chatHasKey && v === aiOriginal.chatProvider;
+    const hosted = HOSTED_CHAT_PROVIDERS.includes(v);
+    setChatProvider(v);
+    setChatModel("");
+    setChatModels([]);
+    setChatModelMeta({});
+    setChatUsingShared(false);
+    setChatCheck({ loading: false, error: null });
+    setChatKeyMode(savedHere || !hosted ? "own" : "shared");
+    // Only ask the server for models when a key it can use actually exists.
+    if (hosted || savedHere) loadChatModels(v);
+  }
+
+  async function switchChatKeyMode(mode: "shared" | "own") {
+    if (mode === chatKeyMode) return;
+    if (mode === "shared" && chatHasKey && chatProvider === aiOriginal.chatProvider) {
+      if (!window.confirm("Switch to MailNet's shared key? Your saved key for this provider will be deleted.")) return;
+      await removeKey("chat", { keepProvider: true });
+      return;
+    }
+    setChatKeyMode(mode);
+    setChatKeyInput("");
+    setChatCheck({ loading: false, error: null });
+    if (mode === "shared") {
+      loadChatModels(chatProvider);
+    } else {
+      setChatModels([]);
+      setChatModelMeta({});
+      setChatUsingShared(false);
+    }
+  }
+
+  function switchEmbedProvider(v: string) {
+    const savedHere = embedHasKey && v === aiOriginal.embedProvider;
+    const hosted = HOSTED_EMBED_PROVIDERS.includes(v);
+    setEmbedProvider(v);
+    setEmbedUsingShared(false);
+    setEmbedCheck({ loading: false, error: null });
+    setEmbedKeyMode(savedHere || !hosted ? "own" : "shared");
+    if (hosted || savedHere) verifyEmbedKey(v);
+  }
+
+  async function switchEmbedKeyMode(mode: "shared" | "own") {
+    if (mode === embedKeyMode) return;
+    if (mode === "shared" && embedHasKey && embedProvider === aiOriginal.embedProvider) {
+      if (!window.confirm("Switch to MailNet's shared key? Your saved key for this provider will be deleted.")) return;
+      await removeKey("embeddings", { keepProvider: true });
+      return;
+    }
+    setEmbedKeyMode(mode);
+    setEmbedKeyInput("");
+    setEmbedCheck({ loading: false, error: null });
+    setEmbedUsingShared(false);
+    if (mode === "shared") verifyEmbedKey(embedProvider);
   }
 
   function set<K extends keyof Preferences>(key: K, value: Preferences[K]) {
@@ -609,6 +735,24 @@ export default function SettingsModal({
   // rest of the provider's catalog follows underneath it.
   const popularModels = chatModels.filter((m) => chatModelMeta[m]?.popular);
   const otherModels = chatModels.filter((m) => !chatModelMeta[m]?.popular);
+  const chatIsHosted = HOSTED_CHAT_PROVIDERS.includes(chatProvider);
+  const embedIsHosted = HOSTED_EMBED_PROVIDERS.includes(embedProvider);
+  // A saved key belongs to the provider it was saved for. Reading it as "you
+  // have a key" for whatever is selected now is how the badge ended up lying.
+  const chatSavedKeyHere = chatHasKey && chatProvider === aiOriginal.chatProvider;
+  const embedSavedKeyHere = embedHasKey && embedProvider === aiOriginal.embedProvider;
+  const chatKeyState: "yours" | "shared" | "needed" =
+    chatSavedKeyHere || (chatKeyMode === "own" && !!chatKeyInput.trim())
+      ? "yours"
+      : chatIsHosted && chatKeyMode === "shared"
+        ? "shared"
+        : "needed";
+  const embedKeyState: "yours" | "shared" | "needed" =
+    embedSavedKeyHere || (embedKeyMode === "own" && !!embedKeyInput.trim())
+      ? "yours"
+      : embedIsHosted && embedKeyMode === "shared"
+        ? "shared"
+        : "needed";
 
   return (
     <div
@@ -689,7 +833,7 @@ export default function SettingsModal({
                         <select
                           className={selectClass}
                           value={chatProvider}
-                          onChange={(e) => { const v = e.target.value; setChatProvider(v); setChatModel(""); setChatModels([]); setChatModelMeta({}); loadChatModels(v); }}
+                          onChange={(e) => switchChatProvider(e.target.value)}
                         >
                           <option value="nvidia">NVIDIA (NIM)</option>
                           <option value="groq">Groq</option>
@@ -698,23 +842,42 @@ export default function SettingsModal({
                           <option value="anthropic">Anthropic</option>
                           <option value="ollama_cloud">Ollama Cloud</option>
                         </select>
-                        <KeyBadge yours={chatHasKey} />
+                        <KeyBadge state={chatKeyState} />
                       </div>
                     </div>
                   </Field>
                   <Field label="Chat API Key" fieldKey="chat_key">
                     <div className="space-y-1.5">
-                      <input
-                        type="password"
-                        autoComplete="off"
-                        className={inputClass}
-                        placeholder={chatHasKey ? "•••••••• saved, type to replace" : "Paste your API key (optional)"}
-                        value={chatKeyInput}
-                        onChange={(e) => setChatKeyInput(e.target.value)}
-                        onBlur={(e) => { const k = e.target.value.trim(); if (k) loadChatModels(chatProvider, k); }}
+                      {chatIsHosted && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <KeySourceSwitch mode={chatKeyMode} onChange={switchChatKeyMode} />
+                          <span className="text-xs text-gray-400 dark:text-gray-500">
+                            {chatKeyMode === "shared" ? "Free, rate-limited" : "Your own limits and billing"}
+                          </span>
+                        </div>
+                      )}
+                      {(!chatIsHosted || chatKeyMode === "own") && (
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          className={inputClass}
+                          placeholder={chatSavedKeyHere ? "•••••••• saved, type to replace" : "Paste your API key for this provider"}
+                          value={chatKeyInput}
+                          onChange={(e) => setChatKeyInput(e.target.value)}
+                          onBlur={(e) => { const k = e.target.value.trim(); if (k) loadChatModels(chatProvider, k); }}
+                        />
+                      )}
+                      <CheckLine
+                        state={chatCheck}
+                        okText={
+                          chatModels.length === 0
+                            ? ""
+                            : chatUsingShared
+                              ? `${chatModels.length} models available on MailNet's shared key`
+                              : `${chatModels.length} models available on your key`
+                        }
                       />
-                      <CheckLine state={chatCheck} okText={chatModels.length > 0 ? `${chatModels.length} models available` : ""} />
-                      {chatHasKey && (
+                      {chatSavedKeyHere && !chatIsHosted && (
                         <button type="button" onClick={() => removeKey("chat")} className="text-xs text-red-500 hover:underline">
                           Remove saved key
                         </button>
@@ -729,7 +892,13 @@ export default function SettingsModal({
                       disabled={chatModels.length === 0}
                     >
                       {chatModels.length === 0 ? (
-                        <option value="">{chatCheck.loading ? "Loading models…" : "Add or verify a key to load models"}</option>
+                        <option value="">
+                          {chatCheck.loading
+                            ? "Loading models…"
+                            : chatIsHosted && chatKeyMode === "shared"
+                              ? "Couldn't load models right now"
+                              : "Add your API key above to load models"}
+                        </option>
                       ) : popularModels.length === 0 ? (
                         chatModels.map((m) => <option key={m} value={m}>{m}</option>)
                       ) : (
@@ -759,9 +928,11 @@ export default function SettingsModal({
                   <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                     Pick a model that supports tool calling (e.g. GPT, Claude, Gemini, Llama 3.3, gpt-oss). Some models like Gemma can't reliably use tools, so actions and memory may not work.
                   </p>
-                  {!["nvidia", "groq", "google_genai"].includes(chatProvider) && !chatHasKey && !chatKeyInput.trim() && (
+                  {!chatIsHosted && !chatSavedKeyHere && !chatKeyInput.trim() && (
                     <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-amber-600 dark:text-amber-500 leading-relaxed">
-                      No key added for this provider. We only host shared keys for NVIDIA, Groq and Google, so chat will fall back to the shared default model until you add your own {chatProvider === "openai" ? "OpenAI" : chatProvider === "anthropic" ? "Anthropic" : "Ollama Cloud"} key above.
+                      MailNet has no key for this provider. We host keys for NVIDIA, Groq and Google only, so until you add
+                      an {chatProvider === "openai" ? "OpenAI" : chatProvider === "anthropic" ? "Anthropic" : "Ollama Cloud"} key
+                      above, its models can't be listed and chat keeps running on the shared default.
                     </p>
                   )}
 
@@ -770,37 +941,59 @@ export default function SettingsModal({
                       <select
                         className={selectClass}
                         value={embedProvider}
-                        onChange={(e) => { const v = e.target.value; setEmbedProvider(v); setEmbedCheck({ loading: false, error: null }); verifyEmbedKey(v); }}
+                        onChange={(e) => switchEmbedProvider(e.target.value)}
                       >
                         <option value="nvidia">NVIDIA (NIM)</option>
                         <option value="google">Google (Gemini)</option>
                         <option value="openai">OpenAI</option>
                       </select>
-                      <KeyBadge yours={embedHasKey} />
+                      <KeyBadge state={embedKeyState} />
                     </div>
                   </Field>
                   <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                     Powers personalization by remembering your preferences and recurring contacts to tailor replies.
+                    {embedIsHosted && embedKeyMode === "shared"
+                      ? " Runs on MailNet's key, with a daily limit on new memories."
+                      : ""}
                   </p>
                   <Field label="Smart Features Key" fieldKey="embed_key">
                     <div className="space-y-1.5">
+                      {embedIsHosted && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <KeySourceSwitch mode={embedKeyMode} onChange={switchEmbedKeyMode} />
+                          <span className="text-xs text-gray-400 dark:text-gray-500">
+                            {embedKeyMode === "shared" ? "Free, capped saves per day" : "No cap, billed to you"}
+                          </span>
+                        </div>
+                      )}
+                      {(!embedIsHosted || embedKeyMode === "own") && (
                       <input
                         type="password"
                         autoComplete="off"
                         className={inputClass}
-                        placeholder={embedHasKey ? "•••••••• saved, type to replace" : "Paste your API key (optional)"}
+                        placeholder={embedSavedKeyHere ? "•••••••• saved, type to replace" : "Paste your API key for this provider"}
                         value={embedKeyInput}
                         onChange={(e) => setEmbedKeyInput(e.target.value)}
                         onBlur={(e) => { const k = e.target.value.trim(); if (k) verifyEmbedKey(embedProvider, k); }}
                       />
-                      <CheckLine state={embedCheck} okText="Key verified" />
-                      {embedHasKey && (
+                      )}
+                      <CheckLine
+                        state={embedCheck}
+                        okText={embedUsingShared ? "Running on MailNet's key" : embedSavedKeyHere ? "Key verified" : ""}
+                      />
+                      {embedSavedKeyHere && !embedIsHosted && (
                         <button type="button" onClick={() => removeKey("embeddings")} className="text-xs text-red-500 hover:underline">
                           Remove saved key
                         </button>
                       )}
                     </div>
                   </Field>
+                  {!embedIsHosted && !embedSavedKeyHere && !embedKeyInput.trim() && (
+                    <p className="ml-[10.5rem] -mt-1 mb-1 text-xs text-amber-600 dark:text-amber-500 leading-relaxed">
+                      This provider needs your own key. Memory runs free on NVIDIA only, so pick NVIDIA to keep it without a key,
+                      or add a {embedProvider === "google" ? "Google" : "OpenAI"} key above to use this one.
+                    </p>
+                  )}
                 </div>
               </div>
 

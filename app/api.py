@@ -35,7 +35,8 @@ from bson import ObjectId
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_needed, refresh_google_token_if_needed, \
-    build_agent, fetch_mcp_tools, get_or_create_user, db, mongo_client, content_to_text, SENSITIVE_TOOLS
+    build_agent, fetch_mcp_tools, get_or_create_user, db, mongo_client, content_to_text, SENSITIVE_TOOLS, \
+    SHARED_CHAT_KEYS
 from provider_meta import (annotate_chat_models, list_chat_models,
                            retired_nvidia_models, validate_key, ProviderError)
 from logging_config import get_logger
@@ -1304,14 +1305,36 @@ async def put_api_keys(request: Request):
     return {"ok": True}
 
 
+def _shared_key_for(slot: str, provider: str):
+    """MailNet's own key for a provider it hosts, or None.
+
+    Chat mirrors the shared failover chain. Smart features are NVIDIA-only by
+    design: shared memory never spends Groq or Gemini quota, so picking Google
+    or OpenAI embeddings means bringing your own key.
+    """
+    if slot == "chat":
+        env = SHARED_CHAT_KEYS.get(provider)
+    else:
+        env = "NVIDIA_API_KEY" if provider == "nvidia" else None
+    return os.getenv(env) if env else None
+
+
 @app.post("/provider-models")
 @limiter.limit("30/hour")
 async def provider_models(request: Request):
     """Validate a key and (for chat) list its available models.
 
     Used by Settings to populate the model dropdown and to give immediate
-    feedback before the user saves. Uses the posted key if present, otherwise
-    the user's saved key for that slot, otherwise the shared developer key.
+    feedback before the user saves. Uses the posted key if present, then the
+    user's saved key for that slot, then MailNet's shared key when it hosts
+    one for that provider.
+
+    That last fallback is why users on the free tier see the model list
+    without pasting anything: making them add a key to browse models they can
+    already use was backwards. It was removed once for spending shared quota
+    on every settings interaction, which the 30/hour limit above now bounds.
+    Listing models is a plain catalog GET that costs no tokens at all; only
+    the embeddings check spends anything, and that is one short embedding.
     """
     user = request.session.get("user")
     if not user:
@@ -1332,24 +1355,32 @@ async def provider_models(request: Request):
         saved = ((doc or {}).get("api_keys") or {}).get(slot) or {}
         if saved.get("provider") == provider and saved.get("key"):
             key = decrypt_payload(saved["key"])["key"]
-    # No shared-key fallback here: this endpoint exists to validate the USER's
-    # key, and falling back spent the shared quota on every unauthenticated-ish
-    # settings interaction, with no rate limit in front of it.
+
+    using_shared = False
     if not key:
-        return {"ok": False, "reason": "error", "message": "No API key available for this provider yet. Paste your key above."}
+        key = _shared_key_for(slot, provider)
+        using_shared = bool(key)
+    if not key:
+        # Not an error: this provider simply needs the user's own key. The UI
+        # says so where the key goes, rather than in red under the dropdown.
+        return {"ok": False, "reason": "no_key",
+                "message": "Add your API key above to use this provider."}
 
     if slot == "chat":
         try:
             models = await asyncio.to_thread(list_chat_models, provider, key)
             models, meta = annotate_chat_models(provider, models)
-            return {"ok": True, "models": models, "model_meta": meta}
+            return {"ok": True, "models": models, "model_meta": meta,
+                    "using_shared": using_shared}
         except ProviderError as e:
             return {"ok": False, "reason": e.reason, "message": e.message}
         except Exception as e:
             return {"ok": False, "reason": "error", "message": str(e)[:200]}
     else:
         ok, reason, msg = await asyncio.to_thread(validate_key, provider, key, "embeddings")
-        return {"ok": True} if ok else {"ok": False, "reason": reason, "message": msg}
+        if ok:
+            return {"ok": True, "using_shared": using_shared}
+        return {"ok": False, "reason": reason, "message": msg}
 
 
 @app.delete("/api-keys/{slot}")
