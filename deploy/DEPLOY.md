@@ -119,6 +119,43 @@ After deploying, send one chat message and confirm the active model:
 docker-compose logs api | grep -i "failing over\|(shared)"
 ```
 
+### 6b. When NVIDIA retires a model
+
+NVIDIA takes hosted models offline on a few days' notice, and six went
+`[410] Gone` during development. A retirement is quiet in production: chat
+keeps answering because a 410 walks the failover chain to Groq, while shared
+memory (which has no chain by design) simply stops saving. The API logs the
+problem at startup:
+
+```
+docker-compose logs api | grep -i "NVIDIA no longer serves"
+```
+
+That line names the dead model and the variable that repoints it. All three
+NVIDIA model names are environment overrides, so the fix is a `.env` edit and
+a restart, with no rebuild and no image push:
+
+```
+NVIDIA_CHAT_MODEL=nvidia/nemotron-3-super-120b-a12b
+MEM_EXTRACT_MODEL=nvidia/nemotron-3-super-120b-a12b
+MEM_EMBED_MODEL=nvidia/nemotron-3-embed-1b
+```
+
+Pick the replacement from the live catalog, and confirm it can call tools
+before trusting it: being listed is not enough, since some listed models
+return "Not found for account" on the free tier.
+
+```
+curl -s https://integrate.api.nvidia.com/v1/models -H "Authorization: Bearer $NVIDIA_API_KEY" | grep -o '"id":"[^"]*"'
+```
+
+Two cautions. A replacement extraction model must accept
+`response_format: json_object`, which is what mem0 sends on every save.
+Changing `MEM_EMBED_MODEL` is not a restart-only change at all: vectors from
+two embedding models cannot share one index, so it means dropping the
+`memories` collection and letting mem0 recreate it, which erases every saved
+memory.
+
 ## Every deploy
 
 Build and push from the workstation, never on the server:
