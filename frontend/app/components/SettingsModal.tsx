@@ -133,16 +133,27 @@ function KeyBadge({ state }: { state: "yours" | "shared" | "needed" }) {
 function KeySourceSwitch({
   mode,
   onChange,
+  sharedAvailable,
 }: {
   mode: "shared" | "own";
   onChange: (m: "shared" | "own") => void;
+  sharedAvailable: boolean;
 }) {
   const base = "px-2.5 py-1 rounded-md transition-colors";
   const on = "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm font-medium";
   const off = "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200";
+  const dead = "text-gray-300 dark:text-gray-600 cursor-not-allowed line-through";
   return (
     <div className="inline-flex gap-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 text-xs">
-      <button type="button" onClick={() => onChange("shared")} className={`${base} ${mode === "shared" ? on : off}`}>
+      {/* Shown for every provider, disabled where MailNet has no key, so the
+          choice never silently disappears and the reason is visible. */}
+      <button
+        type="button"
+        disabled={!sharedAvailable}
+        title={sharedAvailable ? undefined : "MailNet hosts no key for this provider"}
+        onClick={() => onChange("shared")}
+        className={`${base} ${!sharedAvailable ? dead : mode === "shared" ? on : off}`}
+      >
         MailNet&apos;s key
       </button>
       <button type="button" onClick={() => onChange("own")} className={`${base} ${mode === "own" ? on : off}`}>
@@ -848,14 +859,16 @@ export default function SettingsModal({
                   </Field>
                   <Field label="Chat API Key" fieldKey="chat_key">
                     <div className="space-y-1.5">
-                      {chatIsHosted && (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <KeySourceSwitch mode={chatKeyMode} onChange={switchChatKeyMode} />
-                          <span className="text-xs text-gray-400 dark:text-gray-500">
-                            {chatKeyMode === "shared" ? "Free, rate-limited" : "Your own limits and billing"}
-                          </span>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <KeySourceSwitch mode={chatKeyMode} onChange={switchChatKeyMode} sharedAvailable={chatIsHosted} />
+                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                          {!chatIsHosted
+                            ? "We host no key for this provider"
+                            : chatKeyMode === "shared"
+                              ? "Free, rate-limited"
+                              : "Your own limits and billing"}
+                        </span>
+                      </div>
                       {(!chatIsHosted || chatKeyMode === "own") && (
                         <input
                           type="password"
@@ -958,14 +971,16 @@ export default function SettingsModal({
                   </p>
                   <Field label="Smart Features Key" fieldKey="embed_key">
                     <div className="space-y-1.5">
-                      {embedIsHosted && (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <KeySourceSwitch mode={embedKeyMode} onChange={switchEmbedKeyMode} />
-                          <span className="text-xs text-gray-400 dark:text-gray-500">
-                            {embedKeyMode === "shared" ? "Free, capped saves per day" : "No cap, billed to you"}
-                          </span>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <KeySourceSwitch mode={embedKeyMode} onChange={switchEmbedKeyMode} sharedAvailable={embedIsHosted} />
+                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                          {!embedIsHosted
+                            ? "Free memory runs on NVIDIA only"
+                            : embedKeyMode === "shared"
+                              ? "Free, capped saves per day"
+                              : "No cap, billed to you"}
+                        </span>
+                      </div>
                       {(!embedIsHosted || embedKeyMode === "own") && (
                       <input
                         type="password"
