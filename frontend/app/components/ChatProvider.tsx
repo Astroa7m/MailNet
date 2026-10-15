@@ -1,6 +1,9 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
+
+// Conversation ids come from crypto.randomUUID().
+const THREAD_PATH = /^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { SidebarContext, AppUser } from "./SidebarContext";
 import { API } from "../lib/api";
 
@@ -43,7 +46,13 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
   const redirecting = useRef(false);
   const router = useRouter();
   const pathname = usePathname();
-  const currentThreadId = pathname === "/" ? null : pathname.slice(1);
+  // Only "/" and "/<uuid>" are chat screens. Every other path (the admin
+  // dashboard, the 404 page) renders on its own: before this, any path was
+  // read as a thread id, so /admin polled /threads every 2s forever looking
+  // for a conversation called "admin".
+  const isThread = THREAD_PATH.test(pathname);
+  const isChat = pathname === "/" || isThread;
+  const currentThreadId = isThread ? pathname.slice(1) : null;
 
   const fetchThreads = useCallback(async (): Promise<Thread[]> => {
     const r = await fetch(`${API}/threads`, { credentials: "include" });
@@ -54,7 +63,9 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
   }, []);
 
   useEffect(() => {
-    if (initialized.current) return;
+    // Off the chat screens nothing here is needed; it runs when the user
+    // first lands on one, even after starting on /admin.
+    if (!isChat || initialized.current) return;
     initialized.current = true;
     Promise.all([
       fetch(`${API}/me`, { credentials: "include" }).then(async (r) => {
@@ -66,7 +77,7 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
       }),
       fetchThreads(),
     ]).finally(() => { if (!redirecting.current) setLoading(false); });
-  }, []);
+  }, [isChat]);
 
   useEffect(() => {
     if (!currentThreadId) return;
@@ -88,6 +99,7 @@ export default function ChatProvider({ children }: { children: React.ReactNode }
     if (id === currentThreadId) router.push(updated.length > 0 ? `/${updated[0].thread_id}` : "/");
   }
 
+  if (!isChat) return <>{children}</>;
   if (loading) return null;
 
   const groups = groupThreads(threads);
