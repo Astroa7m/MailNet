@@ -216,7 +216,7 @@ FRONTEND_URL=http://localhost:3000
 # Shared LLM keys (used until a user adds their own)
 NVIDIA_API_KEY=...          # default chat primary (free at build.nvidia.com, no card)
 GROQ_API_KEY=...            # chat failover (and the default if NVIDIA_API_KEY is unset)
-GOOGLE_API_KEY=...          # second chat failover; also semantic memory (embeddings + extraction)
+GOOGLE_API_KEY=...          # second chat failover only (memory runs on NVIDIA, never on this key)
 # SHARED_CHAT_CHAIN=nvidia,groq,google_genai   # optional: reorder or drop shared chat providers without a rebuild
 # MEMORY_SAVES_PER_DAY=20    # optional: free-tier daily cap on memory saves (BYOK and admin exempt)
 # NVIDIA retires hosted models on days of notice, so the three model names it
