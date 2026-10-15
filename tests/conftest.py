@@ -26,6 +26,9 @@ os.environ["REDIS_URL"] = "redis://127.0.0.1:9/0"
 os.environ.pop("NVIDIA_API_KEY", None)
 os.environ.pop("SHARED_CHAT_CHAIN", None)
 os.environ.pop("OPENROUTER_API_KEY", None)
+# Analytics never reaches a database from tests; tests that check events
+# install a capture sink instead (see tests/unit/test_analytics.py).
+os.environ["ANALYTICS_ENABLED"] = "0"
 
 # Repo root on sys.path so `from app...` and `from tests...` both resolve when
 # pytest is run from anywhere.

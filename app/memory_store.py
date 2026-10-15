@@ -23,6 +23,7 @@ import hashlib
 
 from dotenv import load_dotenv
 
+from app.analytics import track
 from app.llm_errors import classify_provider_error
 from app.logging_config import get_logger
 
@@ -214,10 +215,13 @@ def remember(user_id: str, text: str, *, provider=None, api_key=None, exempt_fro
 
     Saves on the shared NVIDIA build (provider is None) count against a daily
     per-user cap; BYOK and admin callers pass exempt_from_cap=True."""
+    tier = "shared" if provider is None else "byok"
     mem = _get_memory(provider, api_key)
     if mem is None:
+        track("memory_save", user_id, tier=tier, outcome="unavailable")
         return "Memory is not configured, nothing was saved."
     if provider is None and not exempt_from_cap and _memory_save_capped(user_id):
+        track("memory_save", user_id, tier=tier, outcome="capped")
         return (
             "Daily memory limit reached, so this was not saved. It resets at "
             "midnight UTC, or add your own smart-features key in Settings → "
@@ -230,11 +234,13 @@ def remember(user_id: str, text: str, *, provider=None, api_key=None, exempt_fro
         # nothing (no durable fact found, or the extraction LLM failed). Never
         # claim success in that case.
         events = result.get("results", []) if isinstance(result, dict) else result
+        track("memory_save", user_id, tier=tier, outcome="saved" if events else "nothing_to_save")
         if events:
             return "Saved to memory."
         return "I didn't find a durable fact worth saving in that, so nothing was stored."
     except Exception as e:
         log.exception("remember failed: %r", e)
+        track("memory_save", user_id, tier=tier, outcome="failed")
         return _failure_note(e, "save that to memory")
 
 
@@ -338,6 +344,7 @@ def recall(user_id: str, query: str, limit: int = 5, *, provider=None, api_key=N
         items = res.get("results", res) if isinstance(res, dict) else res
         facts = [it.get("memory", "") for it in items if it.get("memory")]
         log.info("recall(user=%s, query=%r) -> %d facts", user_id, query, len(facts))
+        track("memory_recall", user_id, tier="shared" if provider is None else "byok", hits=len(facts))
         return "\n".join(f"- {f}" for f in facts)
     except Exception as e:
         log.exception("recall failed: %r", e)

@@ -22,7 +22,9 @@ from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -40,6 +42,8 @@ from common import encrypt_payload, decrypt_payload, refresh_microsoft_token_if_
 from provider_meta import (annotate_chat_models, list_chat_models,
                            retired_nvidia_models, validate_key, ProviderError)
 from logging_config import get_logger
+from collections import Counter
+from app.analytics import ensure_indexes as _ensure_event_indexes, summarize as _summarize_events, track
 
 log = get_logger("api")
 
@@ -74,6 +78,20 @@ async def ensure_session(request: Request, call_next):
 limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _unknown_path_goes_home(request: Request, exc: StarletteHTTPException):
+    """A path no route matches sends a browser back to the app, like the
+    frontend does, instead of a JSON 404 that maps out what exists.
+
+    Only unmatched paths (no endpoint in the scope) and only GETs redirect.
+    A real endpoint that answers 404 on purpose, such as /admin/stats for a
+    non-admin or a missing thread, keeps its plain 404, so API callers still
+    get a status they can act on."""
+    if exc.status_code == 404 and request.method == "GET" and request.scope.get("endpoint") is None:
+        return RedirectResponse(url=os.getenv("FRONTEND_URL", "/"), status_code=302)
+    return await http_exception_handler(request, exc)
 
 
 @app.on_event("startup")
@@ -147,6 +165,10 @@ async def _prewarm():
                     )
                 )
             log.info("unique provider-email indexes ensured")
+            # Analytics events expire on their own (TTL index), so the collection
+            # never needs cleaning and stays far inside the free Atlas tier.
+            await asyncio.to_thread(_ensure_event_indexes, _db)
+            log.info("analytics indexes ensured")
         except Exception as e:
             # Never block startup: an existing duplicate makes this fail, and
             # the app should still come up so the duplicate can be cleaned up.
@@ -328,6 +350,7 @@ async def _agent_rate_limited(user_id: str, email: Optional[str] = None) -> Opti
         await redis_client.set(minute_key, 0, ex=120, nx=True)
         n = await redis_client.incr(minute_key)
         if n > AGENT_BURST_PER_MIN:
+            track("rate_limited", user_id, limit="burst")
             return (
                 "You're sending messages faster than I can handle. "
                 "Give me a minute to catch up, then try again."
@@ -339,6 +362,7 @@ async def _agent_rate_limited(user_id: str, email: Optional[str] = None) -> Opti
             await redis_client.set(day_key, 0, ex=172800, nx=True)
             n = await redis_client.incr(day_key)
             if n > AGENT_DAILY_SHARED:
+                track("rate_limited", user_id, limit="daily_shared")
                 return (
                     "You've used today's free message allowance on the shared AI keys. "
                     "It resets at midnight UTC, or add your own API key in "
@@ -391,6 +415,8 @@ else:
                 _rate_limit_stream(input_data, accept, limited),
                 media_type=enc.get_content_type(),
             )
+
+        track("agent_run", user["id"])
 
         azure_token = None
         google_token = None
@@ -768,6 +794,30 @@ def _is_admin_id(user_id: Optional[str]) -> bool:
     except Exception:
         return False
     return ((doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
+# Who may open the analytics dashboard: a comma-separated list of addresses,
+# matched against an account's Gmail OR Outlook address, so one person can be
+# allowed under both sign-ins. Separate from ADMIN_EMAIL on purpose, because
+# that one also drives the rate-limit exemption and tester notifications.
+# Unset falls back to ADMIN_EMAIL, so existing deploys keep working.
+ANALYTICS_ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in (os.getenv("ANALYTICS_ADMIN_EMAILS") or ADMIN_EMAIL).split(",")
+    if e.strip()
+}
+
+
+def _can_view_analytics(user_id: Optional[str]) -> bool:
+    """Read from the stored account, never the session, like _is_admin_id."""
+    if not ANALYTICS_ADMIN_EMAILS or not user_id:
+        return False
+    try:
+        doc = db["users"].find_one({"_id": ObjectId(user_id)}, {"google_email": 1, "outlook_email": 1})
+    except Exception:
+        return False
+    emails = {((doc or {}).get(f) or "").lower() for f in ("google_email", "outlook_email")}
+    return bool(emails & ANALYTICS_ADMIN_EMAILS)
+
+
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _link_conflict(field: str, email: str, current_user_id: str) -> Optional[str]:
@@ -873,6 +923,86 @@ async def tester_request(request: Request, background_tasks: BackgroundTasks):
     return {"ok": True, "message": "Request received! You'll get an email once you're added."}
 
 
+# The dashboard reads at most this many events per request. At today's usage
+# that is weeks of data; the cap keeps a traffic spike from turning one admin
+# page load into a memory problem on the 1 GB server.
+ADMIN_STATS_MAX_EVENTS = 50_000
+
+
+@app.get("/admin/stats")
+async def admin_stats(request: Request, days: int = 14):
+    """Usage analytics for the admin dashboard. 404 for everyone else, so the
+    route does not even admit it exists."""
+    user = request.session.get("user")
+    if not user or not _can_view_analytics(user.get("id")):
+        raise HTTPException(status_code=404, detail="Not found")
+    days = max(1, min(int(days), 90))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    since = (now - datetime.timedelta(days=days)).replace(tzinfo=None)
+
+    def _load():
+        cur = db["events"].find({"ts": {"$gte": since}}, {"_id": 0}).sort("ts", -1).limit(ADMIN_STATS_MAX_EVENTS)
+        return list(cur)
+
+    events = await asyncio.to_thread(_load)
+    out = _summarize_events(events, days, now)
+    out["truncated"] = len(events) >= ADMIN_STATS_MAX_EVENTS
+    out["total_users"] = await asyncio.to_thread(db["users"].count_documents, {})
+    out["accounts"] = await asyncio.to_thread(_account_stats, events)
+    return out
+
+
+def _account_stats(events: list) -> dict:
+    """Current-state numbers from the users and schedules collections, plus the
+    most active accounts in the window. Admin-only, so names and addresses are
+    shown: this is the operator looking at their own user base."""
+    users = list(db["users"].find({}, {
+        "name": 1, "google_email": 1, "outlook_email": 1, "created_at": 1,
+        "api_keys.chat.provider": 1, "api_keys.chat.key": 1,
+        "api_keys.embeddings.provider": 1, "api_keys.embeddings.key": 1,
+        "preferences.memory_enabled": 1, "preferences.auto_approve_tools": 1,
+    }))
+    def _slot(u, name):
+        return ((u.get("api_keys") or {}).get(name) or {})
+
+    own_chat = Counter(_slot(u, "chat").get("provider") for u in users if _slot(u, "chat").get("key"))
+    own_embed = Counter(_slot(u, "embeddings").get("provider") for u in users if _slot(u, "embeddings").get("key"))
+    by_id = {str(u["_id"]): u for u in users}
+
+    runs = Counter(e["user_id"] for e in events if e.get("event") == "agent_run" and e.get("user_id"))
+    calls = Counter(e["user_id"] for e in events if e.get("event") == "model_call" and e.get("user_id"))
+    last_seen = {}
+    for e in events:
+        uid = e.get("user_id")
+        if uid and (uid not in last_seen or e["ts"] > last_seen[uid]):
+            last_seen[uid] = e["ts"]
+    top = []
+    for uid, n in runs.most_common(10):
+        u = by_id.get(uid) or {}
+        top.append({
+            "name": u.get("name") or "(unknown account)",
+            "email": u.get("google_email") or u.get("outlook_email") or "",
+            "runs": n, "model_calls": calls.get(uid, 0),
+            "last_seen": last_seen[uid].strftime("%Y-%m-%d %H:%M") if uid in last_seen else None,
+        })
+
+    try:
+        scheduled = db["schedules"].count_documents({})
+    except Exception:
+        scheduled = None
+    return {
+        "own_chat_key": dict(own_chat),
+        "own_memory_key": dict(own_embed),
+        "memory_paused": sum(1 for u in users if (u.get("preferences") or {}).get("memory_enabled") is False),
+        "auto_approve_users": sum(1 for u in users if (u.get("preferences") or {}).get("auto_approve_tools")),
+        "linked_gmail": sum(1 for u in users if u.get("google_email")),
+        "linked_outlook": sum(1 for u in users if u.get("outlook_email")),
+        "scheduled_emails": scheduled,
+        "tester_requests": db["tester_requests"].count_documents({}),
+        "top_users": top,
+    }
+
+
 @app.get("/tester-requests")
 async def list_tester_requests(request: Request):
     user = request.session.get("user")
@@ -893,7 +1023,9 @@ async def get_me(request: Request):
     user_doc = db["users"].find_one({"_id": ObjectId(user["id"])}, {"providers": 1, "google_email": 1})
     providers = user_doc.get("providers", [user.get("provider", "google")]) if user_doc else [user.get("provider", "google")]
     is_admin = bool(ADMIN_EMAIL) and ((user_doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
+    can_view_analytics = _can_view_analytics(user["id"])
     return {
+        "can_view_analytics": can_view_analytics,
         "name": user.get("name", ""),
         "email": user.get("email", ""),
         "picture": user.get("picture", ""),

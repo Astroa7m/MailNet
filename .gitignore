@@ -60,3 +60,4 @@ test-login.png
 
 # Eval harness output (ledgers, transcripts, reports)
 results/
+.local/

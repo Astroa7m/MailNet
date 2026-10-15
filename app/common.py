@@ -36,6 +36,7 @@ from langgraph.errors import GraphInterrupt
 from app.extra_tools import schedule_send_email, schedule_recurring_email
 from app.memory_store import remember as memory_remember, forget as memory_forget
 from app.llm_errors import classify_provider_error, quota_message, auth_message, generic_message
+from app.analytics import configure as _configure_analytics, provider_of, track
 from app.logging_config import get_logger
 from app.dynamic_tools import build_dynamic_toolset, DynamicToolState, coerce_tool
 
@@ -47,6 +48,9 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
 mongo_client = MongoClient(os.getenv("MONGO_DB_URL"))
 db = mongo_client["MailNet"]
+# A getter, not the object: the eval harness swaps common.db for a fake, and
+# analytics must follow that swap instead of writing eval events to Atlas.
+_configure_analytics(lambda: db)
 
 # The checkpointer is built lazily: MongoDBSaver's constructor creates indexes,
 # which opens a real connection, and doing that at import time meant the module
@@ -198,7 +202,8 @@ def _build_llm(provider: str, api_key: str, model: Optional[str] = None):
 MODEL_CALL_TIMEOUT_S = int(os.getenv("MODEL_CALL_TIMEOUT_S", "120"))
 
 
-def make_model_error_middleware(fallback_chain: list, using_shared: bool):
+def make_model_error_middleware(fallback_chain: list, using_shared: bool,
+                                primary_label: str = "primary", user_id: Optional[str] = None):
     """Middleware that turns provider failures into friendly messages, walking
     the shared failover chain first.
 
@@ -221,11 +226,29 @@ def make_model_error_middleware(fallback_chain: list, using_shared: bool):
       would wrongly tell the user to check their own key when the fault is
       the deploy's key; the log line carries the truth); anything else gives
       generic_message.
+
+    Every call is recorded as one `model_call` analytics event: which label
+    actually served it, its hop (0 is the primary, 1 the first failover...),
+    each failed attempt with its error class, and total latency. That is the
+    data behind "how often do we fall back, and to whom".
     """
+    tier = "shared" if using_shared else "byok"
+
+    def _record(t0, served_label, hop, outcome, failures):
+        track(
+            "model_call", user_id,
+            tier=tier, primary=primary_label, served_by=served_label,
+            provider=provider_of(served_label), hop=hop, outcome=outcome,
+            failures=failures, latency_ms=round((time.perf_counter() - t0) * 1000),
+        )
+
     @wrap_model_call
     async def handle_model_errors(request, handler):
+        t0 = time.perf_counter()
         try:
-            return await asyncio.wait_for(handler(request), timeout=MODEL_CALL_TIMEOUT_S)
+            result = await asyncio.wait_for(handler(request), timeout=MODEL_CALL_TIMEOUT_S)
+            _record(t0, primary_label, 0, "ok", [])
+            return result
         except GraphInterrupt:
             raise
         except Exception as e:
@@ -237,23 +260,28 @@ def make_model_error_middleware(fallback_chain: list, using_shared: bool):
             if "not in request.tools" in msg or "tool call validation" in msg:
                 raise
             kind = classify_provider_error(e)
+            failures = [{"label": primary_label, "provider": provider_of(primary_label), "kind": kind or "error"}]
             if kind is None:
                 log.exception("chat model error: %r", e)
+                _record(t0, None, None, "error", failures)
                 return AIMessage(content=generic_message())
             if kind == "auth" and not using_shared:
                 log.warning("chat auth error (byok): %r", e)
+                _record(t0, None, None, "auth", failures)
                 return AIMessage(content=auth_message())
             last = e
-            for fb_label, fb_llm in (fallback_chain if using_shared else []):
+            for hop, (fb_label, fb_llm) in enumerate(fallback_chain if using_shared else [], start=1):
                 log.warning(
                     "shared chat model failed (%s); failing over to %s: %r",
                     classify_provider_error(last), fb_label, last,
                 )
                 try:
-                    return await asyncio.wait_for(
+                    result = await asyncio.wait_for(
                         handler(request.override(model=fb_llm)),
                         timeout=MODEL_CALL_TIMEOUT_S,
                     )
+                    _record(t0, fb_label, hop, "ok", failures)
+                    return result
                 except GraphInterrupt:
                     raise
                 except Exception as e2:
@@ -261,10 +289,13 @@ def make_model_error_middleware(fallback_chain: list, using_shared: bool):
                     if "not in request.tools" in m2 or "tool call validation" in m2:
                         raise
                     last = e2
-                    if classify_provider_error(e2) not in ("quota", "auth"):
+                    k2 = classify_provider_error(e2)
+                    failures.append({"label": fb_label, "provider": provider_of(fb_label), "kind": k2 or "error"})
+                    if k2 not in ("quota", "auth"):
                         log.warning("failover %s failed with a non-quota, non-auth error (%r); stopping chain", fb_label, e2)
                         break
             last_kind = classify_provider_error(last)
+            _record(t0, None, None, last_kind or "error", failures)
             if last_kind == "quota":
                 log.warning("chat quota/limit error (shared=%s): %r", using_shared, last)
                 return AIMessage(content=quota_message(using_shared))
@@ -412,6 +443,7 @@ def get_or_create_user(email: str, name: str, picture: str, provider: Literal["g
             }
         )
         user = db["users"].find_one({"_id": user["_id"]})
+        track("login", user["_id"], provider=provider)
     else:
         pref = DEFAULT_PREFERENCES.copy()
         pref['sender_name'] = name
@@ -427,6 +459,7 @@ def get_or_create_user(email: str, name: str, picture: str, provider: Literal["g
         }
         result = db["users"].insert_one(new_user)
         user = db["users"].find_one({"_id": result.inserted_id})
+        track("signup", result.inserted_id, provider=provider)
 
     user["_id"] = str(user["_id"])
     return user
@@ -1067,7 +1100,9 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
     # failover chain first. The logic lives in make_model_error_middleware so
     # tests can drive it with fake models; a fresh instance per build captures
     # this request's chain and tier.
-    handle_model_errors = make_model_error_middleware(_fallback_chain, using_shared)
+    handle_model_errors = make_model_error_middleware(
+        _fallback_chain, using_shared, primary_label=model_label, user_id=user_id
+    )
 
     @wrap_tool_call
     async def handle_tool_errors(request, handler):
@@ -1088,6 +1123,8 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
                 "args": request.tool_call.get("args", {}),
             })
             approved = isinstance(decision, dict) and decision.get("approved")
+            track("hitl_decision", user_id, tool=tool_name, approved=bool(approved),
+                  always=bool(isinstance(decision, dict) and decision.get("always")))
             if not approved:
                 return ToolMessage(
                     content=f"[USER DECLINED] The user reviewed and explicitly chose NOT to proceed with {tool_name}. Respond by acknowledging their decision naturally (e.g. 'Got it, I won't send it.' or 'No problem, I'll hold off.'). Do NOT say you failed, do NOT offer to retry, and do NOT suggest trying again unless the user brings it up.",
@@ -1105,11 +1142,19 @@ async def build_agent(azure_token, google_token, user_tz="UTC", user_id=None, di
                     log.warning("could not persist always-allow for %s: %r", tool_name, e)
 
         try:
-            return await handler(request)
+            result = await handler(request)
+            # MCP tools report failure inside a JSON envelope rather than by
+            # raising, so check both shapes.
+            failed = getattr(result, "status", None) == "error" or (
+                '"operation_status": "failed"' in str(getattr(result, "content", ""))
+            )
+            track("tool_call", user_id, tool=tool_name, outcome="error" if failed else "ok")
+            return result
         except GraphInterrupt:
             # Never convert an interrupt into an error message; let it propagate.
             raise
         except Exception as e:
+            track("tool_call", user_id, tool=tool_name, outcome="error")
             return ToolMessage(
                 content=f"Tool error: Please check your input and try again. ({str(e)})",
                 tool_call_id=request.tool_call["id"],

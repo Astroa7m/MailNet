@@ -40,6 +40,8 @@ if str(_ROOT) not in sys.path:
 # environment or .env for live runs; --dry needs none.
 os.environ.setdefault("MONGO_DB_URL", "mongodb://127.0.0.1:9/?serverSelectionTimeoutMS=100&connectTimeoutMS=100")
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:9/0")
+# Eval runs are not product usage and must never land on the dashboard.
+os.environ["ANALYTICS_ENABLED"] = "0"
 if "ENCRYPTION_KEY" not in os.environ:
     from cryptography.fernet import Fernet
     os.environ["ENCRYPTION_KEY"] = Fernet.generate_key().decode()
