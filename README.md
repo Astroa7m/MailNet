@@ -269,3 +269,7 @@ docker-compose.yml  redis · mcp · scheduler · api · frontend
 MailNet is a portfolio project built to demonstrate agentic application design: MCP plus LangGraph architecture, model-agnostic BYOK, semantic memory and retrieval, human-in-the-loop control, multi-provider OAuth, and a polished real-time chat UI.
 
 It is deployed at [getmailnet.com](https://getmailnet.com). Microsoft sign-in is open; Gmail is limited to invited testers while the app completes Google's verification for restricted Gmail scopes (you can request access from the login page). Terms and Privacy live at [/terms](https://getmailnet.com/terms) and [/privacy](https://getmailnet.com/privacy), and both link back to the exact source lines that implement what they claim.
+
+## License
+
+MailNet is licensed under the [Apache License 2.0](LICENSE). You can use, modify and redistribute it, including commercially, as long as you keep the license and the [NOTICE](NOTICE) file and mark the files you changed.
