@@ -829,16 +829,18 @@ def _is_admin_id(user_id: Optional[str]) -> bool:
     except Exception:
         return False
     return ((doc or {}).get("google_email") or "").lower() == ADMIN_EMAIL.lower()
-# Who may open the analytics dashboard: a comma-separated list of addresses,
-# matched against an account's Gmail OR Outlook address, so one person can be
-# allowed under both sign-ins. Separate from ADMIN_EMAIL on purpose, because
-# that one also drives the rate-limit exemption and tester notifications.
-# Unset falls back to ADMIN_EMAIL, so existing deploys keep working.
-ANALYTICS_ADMIN_EMAILS = {
-    e.strip().lower()
-    for e in (os.getenv("ANALYTICS_ADMIN_EMAILS") or ADMIN_EMAIL).split(",")
-    if e.strip()
-}
+def _load_analytics_admins() -> set:
+    """Who may open the analytics dashboard: comma-separated addresses in
+    ANALYTICS_ADMIN_EMAILS, matched against an account's Gmail OR Outlook
+    address, so one person can be allowed under both sign-ins.
+
+    The addresses live only in the server's environment, never in code. There
+    is deliberately no fallback: unset or empty means nobody can open it."""
+    raw = os.getenv("ANALYTICS_ADMIN_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+ANALYTICS_ADMIN_EMAILS = _load_analytics_admins()
 
 
 def _can_view_analytics(user_id: Optional[str]) -> bool:

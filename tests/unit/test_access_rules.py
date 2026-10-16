@@ -53,6 +53,16 @@ def test_empty_list_locks_everyone_out(account):
     assert not api._can_view_analytics(ME)
 
 
+def test_unset_or_blank_env_means_nobody(monkeypatch):
+    """No fallback to ADMIN_EMAIL or anything else hidden in code."""
+    monkeypatch.delenv("ANALYTICS_ADMIN_EMAILS", raising=False)
+    assert api._load_analytics_admins() == set()
+    monkeypatch.setenv("ANALYTICS_ADMIN_EMAILS", " , ")
+    assert api._load_analytics_admins() == set()
+    monkeypatch.setenv("ANALYTICS_ADMIN_EMAILS", "A@x.com, b@y.com")
+    assert api._load_analytics_admins() == {"a@x.com", "b@y.com"}
+
+
 def test_no_session_or_bad_id_is_refused(account):
     account(google="me@gmail.com")
     assert not api._can_view_analytics(None)

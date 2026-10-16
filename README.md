@@ -212,7 +212,7 @@ FRONTEND_URL=http://localhost:3000
 # NEXT_PUBLIC_API_URL=https://your-domain # baked into the frontend at build time
 # ENVIRONMENT=production                  # secure session cookies
 # ADMIN_EMAIL=you@gmail.com               # receives Gmail tester-access requests
-# ANALYTICS_ADMIN_EMAILS=a@gmail.com,a@hotmail.com  # who may open /admin (Gmail or Outlook address); defaults to ADMIN_EMAIL
+# ANALYTICS_ADMIN_EMAILS=you@gmail.com,you@outlook.com  # who may open /admin (Gmail or Outlook address); unset means nobody
 
 # Shared LLM keys (used until a user adds their own)
 NVIDIA_API_KEY=...          # default chat primary (free at build.nvidia.com, no card)
