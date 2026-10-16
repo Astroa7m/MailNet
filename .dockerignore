@@ -61,3 +61,9 @@ tests/
 requirements-dev.txt
 pytest.ini
 results/
+
+# scratch / working dirs: gitignored, and must never bake into the public image
+.local/
+.impeccable/
+.files/
+.pytest_cache/

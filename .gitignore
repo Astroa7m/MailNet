@@ -61,3 +61,7 @@ test-login.png
 # Eval harness output (ledgers, transcripts, reports)
 results/
 .local/
+
+# Claude working dirs (local only)
+.impeccable/
+.files/
