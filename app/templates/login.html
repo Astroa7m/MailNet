@@ -240,7 +240,7 @@
         {% endif %}
 
         <div class="auth">
-            <a href="/login/google" class="login-btn" onclick="openGmailWarn(event)">
+            <a href="/login/google" class="login-btn" id="googleLogin">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                     <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -251,7 +251,7 @@
                 <span class="invite">Invite-only</span>
             </a>
 
-            <a href="/login/microsoft" class="login-btn" onclick="appendTz(event)">
+            <a href="/login/microsoft" class="login-btn" id="microsoftLogin">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zm12.6 0H12.6V0H24v11.4z" fill="#f4f4f5"/>
                 </svg>
@@ -277,8 +277,8 @@
                 "app not verified" screen and block the sign-in.
             </p>
             <div class="modal-actions">
-                <button type="button" onclick="closeGmailWarn(); openTesterModal()">Request access</button>
-                <button type="button" class="primary" onclick="continueToGoogle()">I'm a tester, continue</button>
+                <button type="button" id="warnRequestAccess">Request access</button>
+                <button type="button" class="primary" id="warnContinue">I'm a tester, continue</button>
             </div>
         </div>
     </div>
@@ -299,13 +299,17 @@
             <div class="status" id="testerStatus"></div>
             <input type="email" id="testerEmail" placeholder="you@gmail.com" autocomplete="email" />
             <div class="modal-actions">
-                <button type="button" onclick="closeTesterModal()">Close</button>
-                <button type="button" class="primary" id="testerSubmit" onclick="submitTesterRequest()">Request access</button>
+                <button type="button" id="testerClose">Close</button>
+                <button type="button" class="primary" id="testerSubmit">Request access</button>
             </div>
         </div>
     </div>
 
-    <script>
+    {# The nonce comes from the CSP middleware in api.py: without it the
+       browser refuses to run this script. Handlers are attached here rather
+       than as onclick="" attributes, because the policy blocks inline
+       handlers (that is the point: injected markup cannot run code). #}
+    <script nonce="{{ request.state.csp_nonce }}">
         function appendTz(e) {
             e.preventDefault();
             const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -336,6 +340,13 @@
             url.searchParams.set("tz", tz);
             window.location.href = url.toString();
         }
+
+        document.getElementById("googleLogin").addEventListener("click", openGmailWarn);
+        document.getElementById("microsoftLogin").addEventListener("click", appendTz);
+        document.getElementById("warnRequestAccess").addEventListener("click", () => { closeGmailWarn(); openTesterModal(); });
+        document.getElementById("warnContinue").addEventListener("click", continueToGoogle);
+        document.getElementById("testerClose").addEventListener("click", closeTesterModal);
+        document.getElementById("testerSubmit").addEventListener("click", submitTesterRequest);
 
         testerModal.addEventListener("click", (e) => { if (e.target === testerModal) closeTesterModal(); });
         gmailWarnModal.addEventListener("click", (e) => { if (e.target === gmailWarnModal) closeGmailWarn(); });

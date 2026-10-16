@@ -70,6 +70,41 @@ app.add_middleware(
 )
 
 # starlette_session returns None for missing sessions instead of {}; normalise it here
+# Content Security Policy for everything FastAPI serves.
+#
+# HTML pages (login, privacy, terms) get a fresh nonce per request: a random
+# one-time value the template puts on its own <script> tag. The browser runs
+# only scripts carrying it, so markup injected into a page cannot execute.
+# Inline onclick="" handlers are blocked for the same reason, which is why
+# login.html attaches its handlers from the script instead.
+#
+# Everything else (JSON, attachments, files) gets a policy that allows
+# nothing at all, plus sandbox. An uploaded .html or .svg opened directly
+# from /attachment-raw therefore renders inert instead of running code on
+# our origin. <img> tags elsewhere are unaffected: a response's CSP governs
+# only that response when it is opened as a page.
+#
+# /chat is the legacy Chainlit UI, which loads its own scripts; it is left
+# alone rather than broken.
+_CSP_HTML = (
+    "default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
+_CSP_OTHER = "default-src 'none'; frame-ancestors 'none'; sandbox"
+
+
+@app.middleware("http")
+async def content_security_policy(request: Request, call_next):
+    nonce = secrets.token_urlsafe(16)
+    request.state.csp_nonce = nonce
+    response = await call_next(request)
+    if not request.url.path.startswith("/chat"):
+        is_html = response.headers.get("content-type", "").startswith("text/html")
+        response.headers["Content-Security-Policy"] = _CSP_HTML.format(nonce=nonce) if is_html else _CSP_OTHER
+    return response
+
+
 @app.middleware("http")
 async def ensure_session(request: Request, call_next):
     if request.scope.get("session") is None:
