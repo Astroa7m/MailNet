@@ -64,5 +64,11 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/|api/copilotkit|.*\\..*).*)"],
+  // Skip Next internals, the CopilotKit API route, and real static-asset
+  // extensions at the END of the path (security review F8). The old rule
+  // excluded any path containing a dot anywhere, so /x.png bypassed the CSP
+  // and the route guard entirely.
+  matcher: [
+    "/((?!_next/|api/copilotkit|.*\\.(?:ico|png|jpg|jpeg|gif|webp|svg|css|js|mjs|map|woff2?|ttf|otf|json|txt|xml|webmanifest|pdf)$).*)",
+  ],
 };

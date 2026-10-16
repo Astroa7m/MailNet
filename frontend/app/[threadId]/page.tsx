@@ -1,6 +1,6 @@
 "use client";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, notFound } from "next/navigation";
 import { CopilotKit } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
@@ -382,6 +382,14 @@ export default function ThreadPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // A thread id is always a UUID (crypto.randomUUID). Anything else is a probe
+  // or a stale link, so 404 instead of rendering the chat shell with it
+  // reflected into the page (security review F8).
+  const THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (threadId && !THREAD_ID_RE.test(threadId)) {
+    notFound();
+  }
 
   return (
     <HistoryContext.Provider value={history}>
