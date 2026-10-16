@@ -1,0 +1,79 @@
+# Runs on every push and pull request, plus weekly so new advisories against
+# unchanged dependencies still show up.
+#
+# Blocking (a red X means do not merge):
+#   secrets  gitleaks over the whole git history: no API key, token or
+#            password may ever land in a commit.
+#   tests    the offline pytest suite (no network, no real keys).
+#
+# Advisory (reported in the run summary, never blocks):
+#   deps     pip-audit and npm audit list dependencies with known CVEs.
+#            Advisory because fixing them means version bumps that need
+#            their own testing (msal caps cryptography, starlette needs a
+#            FastAPI jump), and a check that is red forever gets ignored.
+#            Dependabot opens the upgrade PRs; this job keeps the list visible.
+name: security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history, so old commits are scanned too
+      - name: gitleaks (full history)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 \
+            git /repo --log-opts=--all --redact --no-banner --exit-code 1
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # matches app/Dockerfile
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: pytest (offline suite)
+        run: python -m pytest tests -q -p no:cacheprovider
+
+  deps:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"   # matches frontend/Dockerfile
+      - run: pip install pip-audit
+      - name: pip-audit (api)
+        run: pip-audit -r requirements.txt --progress-spinner off | tee -a audit.txt
+      - name: pip-audit (mcp server)
+        run: pip-audit -r mcp-server/requirements.txt --progress-spinner off | tee -a audit.txt
+      - name: npm audit (frontend, package-lock.json is what the image installs)
+        working-directory: frontend
+        run: npm audit --audit-level high | tee -a ../audit.txt
+      - name: summary
+        if: always()
+        run: |
+          echo '### Dependency audit' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 audit.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
