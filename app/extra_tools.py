@@ -5,6 +5,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,6 +22,40 @@ def _scheduler_headers() -> dict:
 schedule_protocol = os.getenv("SCHEDULE_PROTOCOL")
 schedule_host = os.getenv("SCHEDULE_HOST")
 schedule_port = os.getenv("SCHEDULE_PORT")
+
+# A recurring email must pin a field coarser than minute/second, and must not
+# fire more often than hourly. Without this an under-specified cron fires every
+# second, flooding the user's own account (security review F3).
+MIN_RECURRING_INTERVAL_S = 3600
+MAX_RECURRING_JOBS_PER_USER = 20
+_RECURRING_COARSE_FIELDS = ("hour", "day_of_week", "day", "month")
+
+
+def validate_recurring_cron(cron_fields: dict, timezone: str = "UTC"):
+    """Return (ok, reason). Rejects a cron schedule that would fire too often:
+    one that pins nothing coarser than minute/second, or whose first two fire
+    times are less than MIN_RECURRING_INTERVAL_S apart."""
+    if not any(cron_fields.get(f) is not None for f in _RECURRING_COARSE_FIELDS):
+        return False, (
+            "A recurring email needs at least a time of day (an hour), and usually "
+            "a weekday or day too. Without one it would fire every minute. Tell me "
+            "when it should go out, for example 'every Monday at 9am'."
+        )
+    try:
+        trigger = CronTrigger(timezone=timezone, **cron_fields)
+        now = datetime.now(trigger.timezone)
+        first = trigger.get_next_fire_time(None, now)
+        if first is None:
+            return True, ""  # never fires again, harmless
+        nxt = trigger.get_next_fire_time(first, first + timedelta(seconds=1))
+        if nxt is not None and (nxt - first).total_seconds() < MIN_RECURRING_INTERVAL_S:
+            return False, (
+                "That schedule would send more than once an hour. Please space it out "
+                "to at most hourly."
+            )
+    except Exception as e:
+        return False, f"I could not understand that schedule ({e}). Please restate it."
+    return True, ""
 
 
 def get_iso_based_on_args(
@@ -174,6 +209,20 @@ def schedule_recurring_email(
     hour/minute are the time of day in the user's local timezone.
     Returns a success or failure message.
     """
+    # Refuse an under-specified schedule before it reaches the scheduler, so the
+    # model gets a clear reason instead of silently creating a once-a-second job
+    # (security review F3).
+    cron_fields = {}
+    for _k, _v in (("hour", hour), ("minute", minute), ("second", second),
+                   ("day", day), ("month", month)):
+        if _v is not None:
+            cron_fields[_k] = _v
+    if day_of_week:
+        cron_fields["day_of_week"] = day_of_week
+    ok, reason = validate_recurring_cron(cron_fields, timezone)
+    if not ok:
+        return reason
+
     endpoint = f"{schedule_protocol}://{schedule_host}:{schedule_port}/schedule_recurring"
 
     payload = {

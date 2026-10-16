@@ -2,13 +2,14 @@ import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import uuid4
 
 import uvicorn
 from apscheduler.jobstores.mongodb import MongoDBJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -238,6 +239,33 @@ async def schedule_recurring_event(req: Request):
         if k in data and data[k] is not None
     }
     timezone = data.get("timezone", "UTC")
+
+    # Backstop (security review F3): the api-side tool validates first, but this
+    # is the one choke point every caller hits. Refuse a schedule with no field
+    # coarser than minute/second, or a sub-hourly cadence, and cap live jobs.
+    if not any(cron_fields.get(f) is not None for f in ("hour", "day_of_week", "day", "month")):
+        raise HTTPException(status_code=400,
+                            detail="Recurring schedule must set at least an hour, weekday, day, or month.")
+    try:
+        _probe = CronTrigger(timezone=timezone, **cron_fields)
+        _a = _probe.get_next_fire_time(None, datetime.now(_probe.timezone))
+        if _a is not None:
+            _b = _probe.get_next_fire_time(_a, _a + timedelta(seconds=1))
+            if _b is not None and (_b - _a).total_seconds() < 3600:
+                raise HTTPException(status_code=400,
+                                    detail="Recurring schedule must not fire more than once an hour.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid recurring schedule: {e}")
+
+    _uid = data.get("user_id", "")
+    _live = sum(1 for j in scheduler.get_jobs()
+                if (j.kwargs or {}).get("user_id") == _uid
+                and type(j.trigger).__name__ == "CronTrigger")
+    if _live >= 20:
+        raise HTTPException(status_code=400,
+                            detail=f"You already have {_live} recurring emails scheduled (max 20). Cancel one first.")
 
     safe_to = data["to"].replace("@", "_").replace(".", "_")
     job_id = f"cron_{data.get('user_id', 'unknown')}_{safe_to}_{'_'.join(f'{k}{v}' for k, v in cron_fields.items())}"
