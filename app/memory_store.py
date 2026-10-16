@@ -210,11 +210,29 @@ def _memory_save_capped(user_id: str) -> bool:
         return False
 
 
+# A stored memory is a short, single-line fact. Anything longer or multi-line is
+# refused (security review F1): it is almost always a pasted or injected blob,
+# not a durable preference the user typed.
+MEMORY_FACT_MAX_CHARS = 500
+
+
 def remember(user_id: str, text: str, *, provider=None, api_key=None, exempt_from_cap: bool = False) -> str:
     """Store a durable fact about the user. Returns a human-readable status.
 
     Saves on the shared NVIDIA build (provider is None) count against a daily
     per-user cap; BYOK and admin callers pass exempt_from_cap=True."""
+    # Shape validation (security review F1): refuse empty, overlong, or
+    # multi-line input so a planted blob from an email body cannot be stored.
+    text = (text or "").strip()
+    if not text:
+        return "Nothing to save: the note was empty."
+    if len(text) > MEMORY_FACT_MAX_CHARS:
+        return (
+            "That is too long to store as a memory. Keep it to a short fact "
+            f"under {MEMORY_FACT_MAX_CHARS} characters."
+        )
+    if len(text.splitlines()) > 1:
+        return "A memory must be a single short sentence, not multiple lines."
     tier = "shared" if provider is None else "byok"
     mem = _get_memory(provider, api_key)
     if mem is None:

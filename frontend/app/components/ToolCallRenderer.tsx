@@ -93,7 +93,9 @@ function ApprovalButtons({ tool, resolve }: { tool: string; resolve: (r: any) =>
 // model uses them to pull tool schemas on demand (to save tokens), but they are
 // internal mechanics, not user-facing actions, so they stay hidden too.
 export const HIDDEN_TOOLS = new Set([
-  "recall_user_context", "remember_user_fact",
+  // remember_user_fact is deliberately NOT hidden (security review F1): a save
+  // the user cannot see is a save an injected email can hide behind.
+  "recall_user_context",
   "search_tools", "load_tools", "unload_tools",
 ]);
 

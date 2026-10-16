@@ -1685,7 +1685,9 @@ async def delete_thread(thread_id: str, request: Request):
 # Tool calls that are internal mechanics, not user-facing actions, so they are
 # never rendered in the chat history (mirrors HIDDEN_TOOLS in the frontend).
 _HIDDEN_TOOL_NAMES = {
-    "recall_user_context", "remember_user_fact",
+    # remember_user_fact stays visible in history (security review F1): the user
+    # must be able to see every fact saved about them, including planted ones.
+    "recall_user_context",
     "search_tools", "load_tools", "unload_tools",
 }
 
