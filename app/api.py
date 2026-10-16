@@ -649,8 +649,11 @@ else:
                 if not enabled:
                     return ""
                 from app.memory_store import recall as _recall
-                return await asyncio.to_thread(
-                    _recall, user["id"], last_user_text, provider=ep_provider, api_key=ep_key
+                return await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _recall, user["id"], last_user_text, provider=ep_provider, api_key=ep_key
+                    ),
+                    timeout=8,  # recall is best-effort; never stall the turn (F12)
                 )
             except Exception as e:
                 log.warning("[req=%s] proactive recall failed: %r", rid, e)
@@ -1029,6 +1032,24 @@ async def _notify_admin_tester_request(requester_email: str):
         log.warning("tester-request: notification failed for %s: %r", requester_email, e)
 
 
+TESTER_REQUESTS_PER_HOUR_GLOBAL = 20
+
+
+async def _tester_request_global_capped() -> bool:
+    """True once more than TESTER_REQUESTS_PER_HOUR_GLOBAL new tester requests
+    have arrived this hour across all callers. Fails open if Redis is down."""
+    try:
+        hour = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H")
+        key = f"rl:tester:global:{hour}"
+        n = await redis_client.incr(key)
+        if n == 1:
+            await redis_client.expire(key, 7200)
+        return n > TESTER_REQUESTS_PER_HOUR_GLOBAL
+    except Exception as e:
+        log.warning("tester-request global cap check failed (allowing): %r", e)
+        return False
+
+
 @app.post("/tester-request")
 @limiter.limit("5/hour")
 async def tester_request(request: Request, background_tasks: BackgroundTasks):
@@ -1039,6 +1060,12 @@ async def tester_request(request: Request, background_tasks: BackgroundTasks):
     existing = db["tester_requests"].find_one({"email": email})
     if existing:
         return {"ok": True, "message": "You're already on the list. Hang tight!"}
+    # IP-independent global cap (security review F4): the per-IP 5/hour limit is
+    # easy to beat with many source IPs, and each NEW request sends a real email
+    # from the admin's own Gmail. Bound total new requests per hour.
+    if await _tester_request_global_capped():
+        raise HTTPException(status_code=429,
+                            detail="We're getting a lot of requests right now. Please try again later.")
     db["tester_requests"].insert_one({
         "email": email,
         "status": "pending",
@@ -1070,7 +1097,7 @@ async def admin_stats(request: Request, days: int = 14):
         return list(cur)
 
     events = await asyncio.to_thread(_load)
-    out = _summarize_events(events, days, now)
+    out = await asyncio.to_thread(_summarize_events, events, days, now)  # off the event loop (F12)
     out["truncated"] = len(events) >= ADMIN_STATS_MAX_EVENTS
     out["total_users"] = await asyncio.to_thread(db["users"].count_documents, {})
     out["accounts"] = await asyncio.to_thread(_account_stats, events)
@@ -1160,6 +1187,7 @@ async def get_me(request: Request):
 
 
 @app.get("/connection-status")
+@limiter.limit("30/minute")
 async def connection_status(request: Request):
     """Live health of each linked mailbox. Being in `providers` only means the
     account was linked once; the OAuth token can still be expired (invalid_grant).
@@ -1541,9 +1569,10 @@ async def put_api_keys(request: Request):
         kept_key = prev["key"] if prev.get("key") and prev.get("provider") == provider else None
         effective_key = raw_key or (decrypt_payload(kept_key)["key"] if kept_key else None)
         if effective_key:
-            ok, reason, msg = await asyncio.to_thread(validate_key, provider, effective_key, "chat", model)
+            ok, reason, detail = await asyncio.to_thread(validate_key, provider, effective_key, "chat", model)
             if not ok:
-                raise HTTPException(status_code=400, detail={"slot": "chat", "reason": reason, "message": msg})
+                log.warning("save chat key for %s rejected: %s", provider, detail)
+                raise HTTPException(status_code=400, detail={"slot": "chat", "reason": reason, "message": _safe_provider_message(reason)})
         slot = {"provider": provider, "model": model}
         if raw_key:
             slot["key"] = encrypt_payload({"key": raw_key})
@@ -1561,9 +1590,10 @@ async def put_api_keys(request: Request):
         kept_key = prev["key"] if prev.get("key") and prev.get("provider") == provider else None
         effective_key = raw_key or (decrypt_payload(kept_key)["key"] if kept_key else None)
         if effective_key:
-            ok, reason, msg = await asyncio.to_thread(validate_key, provider, effective_key, "embeddings")
+            ok, reason, detail = await asyncio.to_thread(validate_key, provider, effective_key, "embeddings")
             if not ok:
-                raise HTTPException(status_code=400, detail={"slot": "embeddings", "reason": reason, "message": msg})
+                log.warning("save embeddings key for %s rejected: %s", provider, detail)
+                raise HTTPException(status_code=400, detail={"slot": "embeddings", "reason": reason, "message": _safe_provider_message(reason)})
         slot = {"provider": provider}
         if raw_key:
             slot["key"] = encrypt_payload({"key": raw_key})
@@ -1587,6 +1617,21 @@ def _shared_key_for(slot: str, provider: str):
     else:
         env = "NVIDIA_API_KEY" if provider == "nvidia" else None
     return os.getenv(env) if env else None
+
+
+# Map a provider-call failure reason to a fixed, safe client message (security
+# review F18): never return the raw provider exception text, which can carry
+# upstream internals. The server log keeps the detail.
+_PROVIDER_REASON_MESSAGE = {
+    "auth": "That API key was rejected by the provider.",
+    "quota": "The provider's rate or quota limit was reached. Try again later.",
+    "no_key": "Add your API key above to use this provider.",
+    "error": "Could not reach the provider. Please try again.",
+}
+
+
+def _safe_provider_message(reason: str) -> str:
+    return _PROVIDER_REASON_MESSAGE.get(reason, _PROVIDER_REASON_MESSAGE["error"])
 
 
 @app.post("/provider-models")
@@ -1643,14 +1688,17 @@ async def provider_models(request: Request):
             return {"ok": True, "models": models, "model_meta": meta,
                     "using_shared": using_shared}
         except ProviderError as e:
-            return {"ok": False, "reason": e.reason, "message": e.message}
+            log.warning("provider-models chat %s failed: %s", provider, e.message)
+            return {"ok": False, "reason": e.reason, "message": _safe_provider_message(e.reason)}
         except Exception as e:
-            return {"ok": False, "reason": "error", "message": str(e)[:200]}
+            log.warning("provider-models chat %s error: %s", provider, str(e)[:200])
+            return {"ok": False, "reason": "error", "message": _safe_provider_message("error")}
     else:
-        ok, reason, msg = await asyncio.to_thread(validate_key, provider, key, "embeddings")
+        ok, reason, detail = await asyncio.to_thread(validate_key, provider, key, "embeddings")
         if ok:
             return {"ok": True, "using_shared": using_shared}
-        return {"ok": False, "reason": reason, "message": msg}
+        log.warning("provider-models embeddings %s failed: %s", provider, detail)
+        return {"ok": False, "reason": reason, "message": _safe_provider_message(reason)}
 
 
 @app.delete("/api-keys/{slot}")
@@ -1888,6 +1936,21 @@ def _purge_old_attachments():
 _INLINE_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
 _MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_USER_ATTACHMENT_BYTES = 60 * 1024 * 1024
+# Global ceiling across all users (security review F11): the store is an
+# in-process dict, so without this about ten users at their cap could OOM the
+# 1 GB api container (base64 inflates the held size by roughly a third).
+_MAX_TOTAL_ATTACHMENT_BYTES = 200 * 1024 * 1024
+
+
+def _within_attachment_limits(store: dict, user_id: str, incoming: int):
+    """(ok, reason) for admitting `incoming` more bytes for user_id, enforcing
+    the per-user cap and the global ceiling."""
+    if sum(v["size"] for v in store.values()) + incoming > _MAX_TOTAL_ATTACHMENT_BYTES:
+        return False, "busy"
+    used = sum(v["size"] for v in store.values() if v.get("user_id") == user_id)
+    if used + incoming > _MAX_USER_ATTACHMENT_BYTES:
+        return False, "user_full"
+    return True, ""
 
 # Lets the MCP server (server-to-server, no cookies) fetch attachment payloads.
 INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
@@ -1932,8 +1995,10 @@ async def upload_attachment(request: Request, file: Optional[UploadFile] = File(
     content = b"".join(chunks)
 
     _purge_old_attachments()
-    used = sum(v["size"] for v in _attachment_store.values() if v.get("user_id") == user["id"])
-    if used + total > _MAX_USER_ATTACHMENT_BYTES:
+    ok, why = _within_attachment_limits(_attachment_store, user["id"], total)
+    if not ok:
+        if why == "busy":
+            raise HTTPException(status_code=503, detail="Attachment storage is busy, try again shortly")
         raise HTTPException(status_code=413, detail="Attachment storage is full, try again later")
 
     file_id = str(uuid.uuid4())
