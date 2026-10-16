@@ -27,6 +27,22 @@ services:
     environment:
       MCP_HOST: "0.0.0.0"
       API_SERVER_URL: http://api:8002
+      # Least privilege (security review F7): this container parses hostile email
+      # yet received the full .env. Blank the secrets its source never reads, so
+      # a foothold here cannot reach the user database, forge sessions, or spend
+      # LLM quota. It keeps ENCRYPTION_KEY, INTERNAL_API_SECRET and the Azure
+      # client id/secret, which it does use.
+      MONGO_DB_URL: ""
+      SESSION_SECRET: ""
+      JWT_SECRET: ""
+      SCHEDULER_SECRET: ""
+      REDIS_URL: ""
+      REDIS_PASSWORD: ""
+      NVIDIA_API_KEY: ""
+      GROQ_API_KEY: ""
+      GOOGLE_API_KEY: ""
+      LANGSMITH_API_KEY: ""
+      CHAINLIT_AUTH_SECRET: ""
     networks:
       - backend
     # This container holds the encryption key and every user's mail tokens, and
@@ -37,6 +53,8 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -56,6 +74,10 @@ services:
       - backend
     working_dir: /app/app
     command: ["python", "apscheduler_service.py"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -86,6 +108,10 @@ services:
       - edge
     working_dir: /app/app
     command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8002", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -116,6 +142,10 @@ services:
       - edge
     depends_on:
       - api
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     logging:
       driver: "json-file"
