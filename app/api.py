@@ -23,9 +23,11 @@ from authlib.integrations.starlette_client import OAuth
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -110,6 +112,31 @@ async def ensure_session(request: Request, call_next):
     if request.scope.get("session") is None:
         request.scope["session"] = {}
     return await call_next(request)
+
+
+# Reject an oversized body before Pydantic buffers and validates it (security
+# review F5). /agent is a chat turn, not an upload, so 1 MB is generous. The
+# check reads Content-Length only, so the body is never buffered to reject it.
+# (Uploads have their own per-file cap; a chunked body with no Content-Length
+# still passes here and is bounded by the nginx client_max_body_size.)
+_MAX_BODY_BYTES = {"/agent": 1_000_000}
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    cap = _MAX_BODY_BYTES.get(request.url.path)
+    if cap is not None:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                too_big = int(cl) > cap
+            except ValueError:
+                return JSONResponse({"detail": "Invalid Content-Length."}, status_code=400)
+            if too_big:
+                return JSONResponse({"detail": "Request body too large."}, status_code=413)
+    return await call_next(request)
+
+
 limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("REDIS_URL"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -127,6 +154,15 @@ async def _unknown_path_goes_home(request: Request, exc: StarletteHTTPException)
     if exc.status_code == 404 and request.method == "GET" and request.scope.get("endpoint") is None:
         return RedirectResponse(url=os.getenv("FRONTEND_URL", "/"), status_code=302)
     return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError):
+    """Return 422 without echoing the submitted body back. The default handler
+    puts the full input in the response, which on /agent is the entire payload
+    up to the body-size cap (security review F5)."""
+    errors = [{k: v for k, v in e.items() if k != "input"} for e in exc.errors()]
+    return JSONResponse({"detail": jsonable_encoder(errors)}, status_code=422)
 
 
 @app.on_event("startup")
