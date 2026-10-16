@@ -1,13 +1,20 @@
 services:
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # Password-protected (security review F6): Redis holds every session and the
+    # rate-limit counters, and sessions are stored pickled, so write access is
+    # close to code execution. REDIS_PASSWORD must be set in .env.
+    command: ["sh", "-c", "exec redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    networks:
+      - backend
     restart: unless-stopped
     logging:
       driver: "json-file"
       options: { max-size: "10m", max-file: "3" }
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -20,6 +27,8 @@ services:
     environment:
       MCP_HOST: "0.0.0.0"
       API_SERVER_URL: http://api:8002
+    networks:
+      - backend
     # This container holds the encryption key and every user's mail tokens, and
     # it processes attachment metadata written by third parties. Nothing it does
     # needs a writable image layer.
@@ -40,9 +49,11 @@ services:
       dockerfile: app/Dockerfile
     env_file: .env
     environment:
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       MAILNET_SERVER_URL: http://mcp:9111/mcp
       SCHEDULE_HOST: "0.0.0.0"
+    networks:
+      - backend
     working_dir: /app/app
     command: ["python", "apscheduler_service.py"]
     dns:
@@ -67,9 +78,12 @@ services:
       - "127.0.0.1:8002:8002"
     env_file: .env
     environment:
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       MAILNET_SERVER_URL: http://mcp:9111/mcp
       SCHEDULE_HOST: scheduler
+    networks:
+      - backend
+      - edge
     working_dir: /app/app
     command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8002", "--proxy-headers", "--forwarded-allow-ips", "*"]
     dns:
@@ -98,9 +112,18 @@ services:
     environment:
       FASTAPI_URL: http://api:8002/agent
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8002}
+    networks:
+      - edge
     depends_on:
       - api
     restart: unless-stopped
     logging:
       driver: "json-file"
       options: { max-size: "10m", max-file: "3" }
+
+# Two networks (security review F6): redis, mcp, scheduler and api share the
+# private backend; the internet-facing frontend sits on edge with api only, so
+# it can reach the API but never redis (which holds pickled sessions).
+networks:
+  backend: {}
+  edge: {}

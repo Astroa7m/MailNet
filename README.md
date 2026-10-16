@@ -201,7 +201,8 @@ Create a `.env` file at the repo root:
 ```bash
 # Core
 MONGO_DB_URL=...
-REDIS_URL=redis://redis:6379
+REDIS_PASSWORD=...          # a long random string; Redis requires it
+REDIS_URL=redis://:PASSWORD@redis:6379   # PASSWORD = the REDIS_PASSWORD value
 ENCRYPTION_KEY=...          # Fernet key
 SESSION_SECRET=...
 JWT_SECRET=...
