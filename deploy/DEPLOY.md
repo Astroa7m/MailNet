@@ -45,6 +45,26 @@ API to the scheduler, whose routes previously accepted any caller's claimed user
 id. The api, scheduler, and mcp services all read the same `.env`, so one entry
 each is enough.
 
+### 2c. Security-review environment variables (set before the stack comes up)
+
+```
+REDIS_PASSWORD=<generate: python -c "import secrets;print(secrets.token_urlsafe(24))">
+ENVIRONMENT=production
+PUBLIC_URL=https://api.getmailnet.com
+ALLOWED_HOSTS=getmailnet.com,api.getmailnet.com
+```
+
+- `REDIS_PASSWORD` is now required: the redis service refuses to start without
+  it (F6). Use a token with no `$` (see 2b); `docker-compose.yml` embeds it in
+  `REDIS_URL` for the api and scheduler.
+- `ENVIRONMENT=production` turns on the Secure session cookie and closes the
+  interactive API docs (`/docs`, `/redoc`, `/openapi.json`). It is matched
+  case- and space-insensitively now (F14, F17).
+- `PUBLIC_URL` is the API's public origin, used to build the OAuth redirect URIs
+  behind the reverse proxy (F15).
+- `ALLOWED_HOSTS` (optional) rejects a request whose Host header is not in the
+  list (F15). Leave it unset to accept any Host.
+
 ### 2b. Avoid `$` in any `.env` value
 
 Compose expands `$NAME` inside `.env` values and silently substitutes a blank

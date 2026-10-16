@@ -62,7 +62,23 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-app = FastAPI()
+# One normalized production flag (security review F14/F17): ENVIRONMENT is read
+# case- and space-insensitively, so "Production" or a stray trailing space no
+# longer silently drops the Secure cookie flag or exposes the API docs.
+def _is_production(value) -> bool:
+    """True only for ENVIRONMENT=production, ignoring case and surrounding space."""
+    return (value or "").strip().lower() == "production"
+
+
+_IS_PROD = _is_production(os.getenv("ENVIRONMENT"))
+
+# In production the interactive docs and the OpenAPI schema are closed: they map
+# every route and parameter to any caller, and the api subdomain proxies them.
+app = FastAPI(
+    docs_url=None if _IS_PROD else "/docs",
+    redoc_url=None if _IS_PROD else "/redoc",
+    openapi_url=None if _IS_PROD else "/openapi.json",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
@@ -70,6 +86,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Reject requests with an unexpected Host header (security review F15): without
+# this, a spoofed Host flows into Host-derived URLs. Gated on ALLOWED_HOSTS so
+# local development (where it is unset) is unaffected.
+_allowed_hosts = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+if _allowed_hosts:
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 # starlette_session returns None for missing sessions instead of {}; normalise it here
 # Content Security Policy for everything FastAPI serves.
@@ -306,7 +330,7 @@ if is_not_using_copilot_kit:
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET"),
-    https_only=os.getenv("ENVIRONMENT") == "production",
+    https_only=_IS_PROD,
     cookie_name="session",
     backend_type=BackendType.aioRedis,
     backend_client=redis_client,
@@ -806,11 +830,39 @@ async def set_timezone(request: Request):
     return {"tz": tz}
 
 
+_LOGOUT_CONFIRM_HTML = (
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<title>Log out</title></head>"
+    "<body style='font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;"
+    "text-align:center;padding:0 1rem'>"
+    "<h1>Log out of MailNet?</h1><p>Confirm to end your session.</p>"
+    "<form method='post' action='/logout'>"
+    "<button type='submit' style='padding:.6rem 1.4rem;font-size:1rem;cursor:pointer'>"
+    "Log out</button></form></body></html>"
+)
+
+
 @app.get("/logout")
 async def logout(request: Request):
+    # CSRF guard (security review F13): logging out is a state change, so only
+    # do it on a request that came from our own pages. A cross-site page cannot
+    # forge Sec-Fetch-Site, and a direct navigation (site "none") is shown a
+    # confirm page instead of being logged out silently.
+    site = request.headers.get("sec-fetch-site", "")
+    if site not in ("same-origin", "same-site"):
+        return HTMLResponse(_LOGOUT_CONFIRM_HTML)
     request.session.clear()
-    response = RedirectResponse(url="/")
-    return response
+    return RedirectResponse(url="/")
+
+
+@app.post("/logout")
+async def logout_post(request: Request):
+    # The SameSite=Lax cookie is not sent on a cross-site POST, so a forged POST
+    # arrives with no session and clears nothing. The confirm page above posts
+    # here same-origin, with the cookie, and logs the user out.
+    request.session.clear()
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -1169,6 +1221,13 @@ async def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "error": error})
 
 
+def _safe_tz(raw) -> str:
+    """A timezone from an untrusted query string, checked against the IANA
+    database (security review F15). Anything unknown becomes UTC, so a crafted
+    login link cannot stash text that get_current_time later echoes to the model."""
+    return raw if isinstance(raw, str) and raw in available_timezones() else "UTC"
+
+
 def _oauth_redirect_uri(request: Request, name: str) -> str:
     """Build the OAuth callback URL for the given route.
 
@@ -1193,7 +1252,7 @@ def _oauth_redirect_uri(request: Request, name: str) -> str:
 @app.get("/login/google")
 @limiter.limit("20/minute")
 async def login_google(request: Request):
-    request.session["tz"] = request.query_params.get("tz", "UTC")
+    request.session["tz"] = _safe_tz(request.query_params.get("tz", "UTC"))
     redirect_uri = _oauth_redirect_uri(request, "auth_google")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
@@ -1201,7 +1260,13 @@ async def login_google(request: Request):
 @app.get("/auth/google", name="auth_google")
 @limiter.limit("20/minute")
 async def auth_google(request: Request):
-    token = await oauth.google.authorize_access_token(request)
+    # Mirror the Microsoft handler (security review F15): a replayed or expired
+    # callback raises OAuthError, which should land the user back at login, not
+    # a 500. The state check inside authorize_access_token still blocks forgery.
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError:
+        return RedirectResponse(url="/")
 
     granted_scopes = set(token.get("scope", "").split())
     is_connecting = request.session.pop("connecting", False)
@@ -1279,7 +1344,7 @@ async def auth_google(request: Request):
 @app.get("/login/microsoft")
 @limiter.limit("20/minute")
 async def login_microsoft(request: Request):
-    request.session["tz"] = request.query_params.get("tz", "UTC")
+    request.session["tz"] = _safe_tz(request.query_params.get("tz", "UTC"))
     redirect_uri = _oauth_redirect_uri(request, "auth_microsoft")
     return await oauth.microsoft.authorize_redirect(request, redirect_uri)
 
