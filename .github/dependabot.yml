@@ -16,6 +16,9 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # FastAPI pins starlette (0.118 needs starlette below 0.49), so starlette
+      # moves only together with a FastAPI upgrade, done by hand.
+      - dependency-name: "starlette"
 
   - package-ecosystem: pip
     directory: "/mcp-server"
