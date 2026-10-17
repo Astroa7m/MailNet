@@ -10,9 +10,9 @@ MailNet is a conversational agent built on LangGraph and the Model Context Proto
 
 ### Watch the launch film
 
-[![MailNet launch film: click to watch (85 seconds, sound on)](assets/film-cover.jpg)](https://github.com/Astroa7m/MailNet/releases/tag/launch-film)
+https://github.com/user-attachments/assets/45b1d76d-ed2c-42da-a221-9bb56329a2a3
 
-*85 seconds, sound on. Click the image to watch.*
+*85 seconds, sound on.*
 
 ---
 
