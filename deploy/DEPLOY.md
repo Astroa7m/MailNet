@@ -48,22 +48,32 @@ each is enough.
 ### 2c. Security-review environment variables (set before the stack comes up)
 
 ```
-REDIS_PASSWORD=<generate: python -c "import secrets;print(secrets.token_urlsafe(24))">
+REDIS_PASSWORD=<generate with: openssl rand -hex 24>
 ENVIRONMENT=production
-PUBLIC_URL=https://api.getmailnet.com
-ALLOWED_HOSTS=getmailnet.com,api.getmailnet.com
+PUBLIC_URL=https://getmailnet.com
 ```
 
-- `REDIS_PASSWORD` is now required: the redis service refuses to start without
-  it (F6). Use a token with no `$` (see 2b); `docker-compose.yml` embeds it in
-  `REDIS_URL` for the api and scheduler.
+- `REDIS_PASSWORD` is the only new required value: the redis service refuses
+  to start without it (F6). It must not contain `$` (see 2b), because
+  `docker-compose.yml` embeds it in `REDIS_URL` for the api and scheduler.
+  `openssl rand -hex 24` emits only `0-9a-f`.
 - `ENVIRONMENT=production` turns on the Secure session cookie and closes the
   interactive API docs (`/docs`, `/redoc`, `/openapi.json`). It is matched
-  case- and space-insensitively now (F14, F17).
-- `PUBLIC_URL` is the API's public origin, used to build the OAuth redirect URIs
-  behind the reverse proxy (F15).
-- `ALLOWED_HOSTS` (optional) rejects a request whose Host header is not in the
-  list (F15). Leave it unset to accept any Host.
+  case- and space-insensitively now (F14, F17). The live server should already
+  have it; check rather than overwrite.
+- `PUBLIC_URL` must be the apex origin, `https://getmailnet.com`. The OAuth
+  callbacks registered with Google and Microsoft are
+  `https://getmailnet.com/auth/google` and `/auth/microsoft`, and the API builds
+  its redirect URI from this value (F15), so any other origin breaks sign-in.
+  The live server should already have it.
+- `ALLOWED_HOSTS` is optional: leave it unset. Once this release's
+  `deploy/nginx.conf` is applied, its unknown-Host block (F19) already drops
+  requests for any other name at the edge. If you ever set it, include `api`:
+  the frontend (`FASTAPI_URL`) and mcp (`API_SERVER_URL`) call the API by its
+  Docker service name, so a list without it rejects every chat request and
+  attachment fetch. For example
+  `ALLOWED_HOSTS=getmailnet.com,api.getmailnet.com,api`. This setting has not
+  been exercised end to end yet.
 
 ### 2b. Avoid `$` in any `.env` value
 
