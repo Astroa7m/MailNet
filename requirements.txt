@@ -20,7 +20,7 @@ uvicorn==0.40.0
 pymongo==4.15.5
 cryptography==48.0.1
 msal==1.34.0
-starlette==0.48.0
+starlette==1.8.0
 itsdangerous==2.2.0
 chainlit==2.9.6
 redis==7.2.0
